@@ -1,0 +1,32 @@
+# ==============================================================================
+# Traefik v3 - Configuración Estática
+# UTN FR San Rafael - Infraestructura de Microservicios PDF
+# ==============================================================================
+
+# EntryPoints (Puntos de entrada de red)
+entryPoints:
+  web:
+    address: ":80"
+  traefik:
+    address: ":8080"
+
+# API y Dashboard de auditoría y monitoreo
+api:
+  dashboard: true
+  insecure: true
+
+# Configuración de Logs
+log:
+  level: INFO
+  format: common
+
+accessLog:
+  format: common
+
+# Proveedores de configuración dinámica
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: "pdf-network"
+    watch: true
