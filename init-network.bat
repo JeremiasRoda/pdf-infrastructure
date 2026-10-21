@@ -1,7 +1,7 @@
 @echo off
 REM ==============================================================================
 REM Script de inicialización de la red externa Docker para 'pdf-infrastructure'
-REM UTN FR San Rafael - Arquitectura de Microservicios
+REM Arquitectura de Microservicios
 REM ==============================================================================
 
 setlocal enabledelayedexpansion
@@ -17,7 +17,7 @@ if %errorlevel% equ 0 (
 ) else (
     echo [INFO] Creando red tipo bridge '%NETWORK_NAME%'...
     docker network create --driver bridge --attachable %NETWORK_NAME%
-    if %errorlevel% equ 0 (
+    if !errorlevel! equ 0 (
         echo [SUCCESS] Red '%NETWORK_NAME%' creada exitosamente.
     ) else (
         echo [ERROR] No se pudo crear la red '%NETWORK_NAME%'. Verifique que Docker Desktop este corriendo.

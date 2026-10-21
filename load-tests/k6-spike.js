@@ -4,7 +4,6 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 
 // ==============================================================================
 // Benchmark k6 - Prueba de Carga Spike (100 VUs)
-// Cátedra: Desarrollo de Software - UTN FR San Rafael
 // ==============================================================================
 // Escenario:
 // 1. 10s subiendo abruptamente de 0 a 100 usuarios virtuales (Spike)
@@ -30,8 +29,8 @@ export const options = {
 // URL objetivo (vía Traefik Reverse Proxy o directo)
 const TARGET_URL = __ENV.TARGET_URL || 'http://extractor.universidad.localhost/extract';
 
-// Modo de envío: 'multipart' (por defecto para FastAPI UploadFile) o 'binary' (application/pdf directo)
-const PAYLOAD_MODE = __ENV.PAYLOAD_MODE || 'multipart';
+// Modo de envío: 'binary' (application/pdf directo, requerido por pdf-extractor-service) o 'multipart'
+const PAYLOAD_MODE = __ENV.PAYLOAD_MODE || 'binary';
 
 // Carga de los 4 archivos PDF del dataset oficial en tiempo de inicialización
 const pdfFiles = [

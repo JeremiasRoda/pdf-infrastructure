@@ -103,9 +103,9 @@ services:
         limits:
           cpus: '1.0'
           memory: 1G
-    # Healthcheck nativo de Docker
+    # Healthcheck nativo de Docker (usando python urllib ya que python:slim no incluye curl/wget)
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -264,10 +264,10 @@ Para que el orquestador y los healthchecks de Traefik y Docker funcionen de mane
      }
      ```
 2. **Extractor Service:**
-   - `POST /extract`: recibe un archivo binario o multipart PDF y retorna:
+   - `POST /extract`: recibe el archivo PDF como cuerpo binario directo (`Content-Type: application/pdf` obligatorio, iniciando con la firma `%PDF`) y retorna:
      ```json
      {
-       "content": "Texto extraído...",
+       "content": "Texto extraído en formato Markdown...",
        "page_count": 5
      }
      ```
