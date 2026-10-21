@@ -11,10 +11,11 @@ Este repositorio centraliza y provee:
 5. **Caché Redis (Perfil condicional `cache`)**: Para la etapa de optimización post-baseline.
 6. **Compose de Integración Completa**: Orquestación local de todos los microservicios (`extractor`, `documents`, `mongodb`, `api`).
 7. **Pruebas Automatizadas de Resiliencia y Alta Disponibilidad**: Demostración de tolerancia a fallos ante la cátedra.
+8. **Suite de Benchmarks de Rendimiento (k6 Spike y Vegeta)**: Pruebas de carga comparativas (1 réplica Baseline vs 5 réplicas escaladas) y monitor de recursos en vivo.
 
 ---
 
-## 🌐 Convención de Hostnames y Enrutamiento
+## Convención de Hostnames y Enrutamiento
 
 Todos los servicios responden en el puerto estándar `80` (HTTP) a través de Traefik resolviendo automáticamente los siguientes dominios locales:
 
@@ -32,14 +33,14 @@ Todos los servicios responden en el puerto estándar `80` (HTTP) a través de Tr
 
 ---
 
-## 📜 Contrato Oficial de Infraestructura (`CONTRACTS.md`)
+## Contrato Oficial de Infraestructura (`CONTRACTS.md`)
 
 Para las especificaciones técnicas completas requeridas por cada integrante del equipo (puertos internos, prohibición de `localhost`, snippets exactos de Compose con labels de Traefik v3 y límites de recursos):
-👉 **Consulte el archivo [`CONTRACTS.md`](CONTRACTS.md)**.
+**Consulte el archivo [`CONTRACTS.md`](CONTRACTS.md)**.
 
 ---
 
-## 🚀 Puesta en Marcha Inicial
+## Puesta en Marcha Inicial
 
 ### 1. Variables de Entorno
 
@@ -87,7 +88,7 @@ docker compose logs -f traefik
 
 ---
 
-## 🔄 Integración del Sistema Completo
+## Integración del Sistema Completo
 
 El archivo `docker-compose.integration.yml` asume que los repositorios de los microservicios se encuentran clonados en carpetas hermanas:
 
@@ -107,7 +108,7 @@ docker compose -f docker-compose.integration.yml up -d --build
 
 ---
 
-## 📈 Escalado a 5 Réplicas del Extractor
+## Escalado a 5 Réplicas del Extractor
 
 Dado que el microservicio `extractor` es stateless y CPU-intensivo, la cátedra requiere probar el escalado horizontal:
 
@@ -128,7 +129,7 @@ docker compose -f docker-compose.integration.yml ps extractor
 
 ---
 
-## ⚡ Activación de Caché con Redis (Post-Baseline)
+## Activación de Caché con Redis (Post-Baseline)
 
 > [!WARNING]
 > **Regla de Cátedra:** Durante las pruebas de carga iniciales (Baseline) con k6 y Vegeta, Redis **NO debe estar activo** para medir el rendimiento base del pipeline.
@@ -149,7 +150,7 @@ Los microservicios consumirán la caché mediante `REDIS_URL=redis://redis:6379/
 
 ---
 
-## 🛡️ Ejecución de Prueba de Resiliencia y Tolerancia a Fallos
+## Ejecución de Prueba de Resiliencia y Tolerancia a Fallos
 
 Se incluye una suite de prueba automatizada para demostrar ante la cátedra la alta disponibilidad del sistema. El script:
 1. Verifica que Traefik esté activo y detecta las réplicas del `extractor`.
@@ -167,6 +168,43 @@ chmod +x scripts/test-resilience.sh
 ```powershell
 .\scripts\test-resilience.ps1
 ```
+
+---
+
+## 🚀 Pruebas de Carga y Rendimiento (Issue #5: k6 y Vegeta)
+
+El repositorio incluye la suite oficial para la evaluación de desempeño y escalabilidad bajo el protocolo de la cátedra:
+
+- **k6 Spike Test (100 VUs)**: Evalúa la absorción de tráfico concurrente abrupto (10s subida a 100 VUs, 20s meseta sostenida, 10s descenso).
+- **Vegeta Carga Fija**: Disparo constante de 50 peticiones/segundo durante 30s (1.500 solicitudes) con rotación cíclica de 4 PDFs.
+- **Monitor de Recursos en Vivo**: Captura continua de CPU%, RAM% e I/O de red de las réplicas del extractor y Traefik.
+
+### Flujo Rápido de Ejecución:
+
+```bash
+# 1. Importar o generar dataset de PDFs de prueba
+# Linux / macOS:
+./scripts/copy-stress-pdfs.sh
+# Windows PowerShell:
+.\scripts\copy-stress-pdfs.ps1
+
+# 2. Monitorear recursos en una terminal secundaria
+# Linux / macOS:
+./scripts/monitor-stats.sh
+# Windows PowerShell:
+.\scripts\monitor-stats.ps1
+
+# 3. Ejecutar k6 Spike Test (100 VUs)
+k6 run load-tests/k6-spike.js
+
+# 4. Ejecutar Vegeta Carga Fija (50 req/s por 30s)
+# Linux / macOS:
+./load-tests/run-vegeta.sh
+# Windows PowerShell:
+.\load-tests\run-vegeta.ps1
+```
+
+👉 Para la metodología detallada, ejecución vía Docker y la plantilla de tabla comparativa para el informe final, consulte la **[Guía Completa de Pruebas de Carga](load-tests/README.md)**.
 
 ---
 

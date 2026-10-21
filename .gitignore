@@ -1,0 +1,23 @@
+# ==============================================================================
+# Git Ignore - PDF Infrastructure
+# UTN FR San Rafael - Desarrollo de Software
+# ==============================================================================
+
+# Variables de entorno locales
+.env
+
+# Binarios de pruebas de carga (los PDFs oficiales se importan vía script)
+load-tests/pdfs/*.pdf
+!load-tests/pdfs/.gitkeep
+
+# Resultados y reportes temporales de k6 y Vegeta
+load-tests/*.bin
+load-tests/*.json
+load-tests/results/
+load-tests/reports/
+vegeta-targets.txt
+
+# Logs y volcados del sistema
+*.log
+.DS_Store
+Thumbs.db
