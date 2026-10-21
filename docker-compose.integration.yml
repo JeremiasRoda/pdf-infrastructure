@@ -1,0 +1,177 @@
+# ==============================================================================
+# Docker Compose - Integración Completa del Sistema 'pdf-extractext'
+# Cátedra: Desarrollo de Software - UTN FR San Rafael
+# Repositorios hermanos asumidos:
+#   ../pdf-extractor-service
+#   ../pdf-document-service
+#   ../pdf-api-service
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------------------
+  # Microservicio Extractor (Stateless y Escalable Horizontalmente)
+  # ----------------------------------------------------------------------------
+  extractor:
+    build:
+      context: ../pdf-extractor-service
+      dockerfile: Dockerfile
+    # Sin container_name para permitir 'docker compose ... --scale extractor=5'
+    restart: unless-stopped
+    networks:
+      - pdf-network
+    environment:
+      - PORT=8000
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.extractor.rule=Host(`extractor.universidad.localhost`)"
+      - "traefik.http.routers.extractor.entrypoints=web"
+      - "traefik.http.routers.extractor.service=extractor"
+      - "traefik.http.services.extractor.loadbalancer.server.port=8000"
+      - "traefik.http.services.extractor.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.extractor.loadbalancer.healthcheck.interval=3s"
+      - "traefik.http.services.extractor.loadbalancer.healthcheck.timeout=1s"
+
+  # ----------------------------------------------------------------------------
+  # Base de Datos MongoDB (Persistencia aislada para Document Service)
+  # ----------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    restart: unless-stopped
+    networks:
+      - pdf-network
+    volumes:
+      - mongodb_data:/data/db
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --eval 'db.runCommand({ ping: 1 })' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ----------------------------------------------------------------------------
+  # Microservicio Document Service (Gestión de Documentos y Persistencia)
+  # ----------------------------------------------------------------------------
+  documents:
+    build:
+      context: ../pdf-document-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - pdf-network
+    environment:
+      - PORT=8000
+      - MONGODB_URI=mongodb://mongodb:27017/pdf_documents
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.documents.rule=Host(`documents.universidad.localhost`)"
+      - "traefik.http.routers.documents.entrypoints=web"
+      - "traefik.http.routers.documents.service=documents"
+      - "traefik.http.services.documents.loadbalancer.server.port=8000"
+      - "traefik.http.services.documents.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.documents.loadbalancer.healthcheck.interval=3s"
+      - "traefik.http.services.documents.loadbalancer.healthcheck.timeout=1s"
+
+  # ----------------------------------------------------------------------------
+  # Microservicio API Orchestrator (Punto de Entrada del Pipeline)
+  # ----------------------------------------------------------------------------
+  api:
+    build:
+      context: ../pdf-api-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - pdf-network
+    environment:
+      - PORT=8000
+      - EXTRACTOR_URL=http://extractor:8000
+      - DOCUMENT_SERVICE_URL=http://documents:8000
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      extractor:
+        condition: service_healthy
+      documents:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`api.universidad.localhost`)"
+      - "traefik.http.routers.api.entrypoints=web"
+      - "traefik.http.routers.api.service=api"
+      - "traefik.http.services.api.loadbalancer.server.port=8000"
+      - "traefik.http.services.api.loadbalancer.healthcheck.path=/health"
+      - "traefik.http.services.api.loadbalancer.healthcheck.interval=3s"
+      - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
+
+  # ----------------------------------------------------------------------------
+  # Redis Cache (Perfil 'cache' para optimización POST-BASELINE)
+  # Solo se levanta explícitamente con '--profile cache'
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles:
+      - cache
+    networks:
+      - pdf-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+volumes:
+  mongodb_data:
+
+networks:
+  pdf-network:
+    external: true
