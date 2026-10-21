@@ -19,6 +19,31 @@ services:
       # Servicio interno expuesto
       - "traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080"
 
+  # ----------------------------------------------------------------------------
+  # Redis Cache - Perfil condicional 'cache' (Post-Baseline)
+  # Solo se levanta explícitamente con: docker compose --profile cache up -d
+  # Durante la prueba de carga baseline con k6 / Vegeta NO debe ejecutarse.
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles:
+      - cache
+    networks:
+      - pdf-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
 networks:
   pdf-network:
     external: true
