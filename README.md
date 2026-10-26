@@ -12,6 +12,7 @@ Este repositorio centraliza y provee:
 6. **Compose de Integración Completa**: Orquestación local de todos los microservicios (`extractor`, `documents`, `mongodb`, `api`).
 7. **Pruebas Automatizadas de Resiliencia y Alta Disponibilidad**: Demostración de tolerancia a fallos ante la cátedra.
 8. **Suite de Benchmarks de Rendimiento (k6 Spike y Vegeta)**: Pruebas de carga comparativas (1 réplica Baseline vs 5 réplicas escaladas) y monitor de recursos en vivo.
+9. **Factor IX de Twelve-Factor App (Desechabilidad)**: Apagado elegante (`SIGTERM`), drenado de peticiones, `stop_grace_period` y middleware de reintentos en Traefik.
 
 ---
 
@@ -171,7 +172,31 @@ chmod +x scripts/test-resilience.sh
 
 ---
 
-## 🚀 Pruebas de Carga y Rendimiento (Issue #5: k6 y Vegeta)
+## Factor IX: Desechabilidad y Apagado Elegante (Issue #8)
+
+El ecosistema implementa de forma transversal el **Factor IX de Twelve-Factor App (Desechabilidad)**:
+- **Arranque Rápido (Fast Startup):** Contenedores livianos que alcanzan estado `healthy` en menos de 5 segundos.
+- **Manejo de Señales Unix (`SIGTERM`):** Contenedores configurados con `init: true` (`tini` como PID 1) para propagar señales de apagado sin procesos zombi.
+- **Ventana de Drenado (`stop_grace_period`):** Configurado en `30s` - `35s` en Compose para permitir finalizar la extracción y guardado de PDFs en vuelo.
+- **Middleware de Reintentos en Traefik (`retry-on-shutdown`):** Si una réplica se apaga mientras una petición está en tránsito, Traefik la reenvía automáticamente a una réplica viva garantizando 0% de errores.
+- **Apagado Limpio (Exit Code 0):** Los procesos cierran ordenadamente conexiones de MongoDB, Redis y HTTP saliendo con código `0` (nunca `137`).
+
+### Ejecución de Prueba de Desechabilidad:
+
+- **En Linux / macOS:**
+  ```bash
+  chmod +x scripts/test-disposability.sh
+  ./scripts/test-disposability.sh
+  ```
+
+- **En Windows PowerShell:**
+  ```powershell
+  .\scripts\test-disposability.ps1
+  ```
+
+---
+
+## Pruebas de Carga y Rendimiento (Issue #5: k6 y Vegeta)
 
 El repositorio incluye la suite oficial para la evaluación de desempeño y escalabilidad bajo el protocolo de la cátedra:
 
@@ -204,11 +229,11 @@ k6 run load-tests/k6-spike.js
 .\load-tests\run-vegeta.ps1
 ```
 
-👉 Para la metodología detallada, ejecución vía Docker y la plantilla de tabla comparativa para el informe final, consulte la **[Guía Completa de Pruebas de Carga](load-tests/README.md)**.
+Para la metodología detallada, ejecución vía Docker y la plantilla de tabla comparativa para el informe final, consulte la **[Guía Completa de Pruebas de Carga](load-tests/README.md)**.
 
 ---
 
-## 🔍 Auditoría e Inspección de Traefik
+## Auditoría e Inspección de Traefik
 
 ### Vía Dashboard Web:
 - Acceder a: [http://localhost:8080](http://localhost:8080) o [http://traefik.universidad.localhost](http://traefik.universidad.localhost)

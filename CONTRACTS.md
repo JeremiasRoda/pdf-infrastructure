@@ -92,6 +92,8 @@ services:
       dockerfile: Dockerfile
     # Sin container_name para permitir escalabilidad horizontal
     restart: unless-stopped
+    init: true
+    stop_grace_period: 35s
     networks:
       - pdf-network
     environment:
@@ -113,9 +115,13 @@ services:
     # Configuración de Traefik v3
     labels:
       - "traefik.enable=true"
+      # Middleware de reintentos para soportar desechabilidad y apagados dinámicos sin error 502
+      - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=3"
+      - "traefik.http.middlewares.retry-on-shutdown.retry.initialinterval=100ms"
       # Enrutador HTTP
       - "traefik.http.routers.extractor.rule=Host(`extractor.universidad.localhost`)"
       - "traefik.http.routers.extractor.entrypoints=web"
+      - "traefik.http.routers.extractor.middlewares=retry-on-shutdown"
       - "traefik.http.routers.extractor.service=extractor"
       # Balanceador de carga y puerto interno de la app
       - "traefik.http.services.extractor.loadbalancer.server.port=8000"
@@ -163,11 +169,14 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
     networks:
       - pdf-network
     environment:
       - PORT=8000
-      - MONGODB_URI=mongodb://mongodb:27017/pdf_documents
+      - MONGODB_URI=mongodb://mongodb:27017
+      - MONGODB_DATABASE=pdf_extractext
     depends_on:
       mongodb:
         condition: service_healthy
@@ -177,7 +186,7 @@ services:
           cpus: '1.0'
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -186,10 +195,11 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.documents.rule=Host(`documents.universidad.localhost`)"
       - "traefik.http.routers.documents.entrypoints=web"
+      - "traefik.http.routers.documents.middlewares=retry-on-shutdown"
       - "traefik.http.routers.documents.service=documents"
       - "traefik.http.services.documents.loadbalancer.server.port=8000"
       - "traefik.http.services.documents.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.interval=3s"
+      - "traefik.http.services.documents.loadbalancer.healthcheck.interval=2s"
       - "traefik.http.services.documents.loadbalancer.healthcheck.timeout=1s"
 
 volumes:
@@ -215,6 +225,8 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
     networks:
       - pdf-network
     environment:
@@ -229,7 +241,7 @@ services:
           cpus: '1.0'
           memory: 1G
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -sf http://127.0.0.1:8000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -238,10 +250,12 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.api.rule=Host(`api.universidad.localhost`)"
       - "traefik.http.routers.api.entrypoints=web"
+      - "traefik.http.routers.api.middlewares=retry-on-shutdown"
       - "traefik.http.routers.api.service=api"
       - "traefik.http.services.api.loadbalancer.server.port=8000"
       - "traefik.http.services.api.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.api.loadbalancer.healthcheck.interval=3s"
+      - "traefik.http.services.api.loadbalancer.healthcheck.interval=2s"
+      - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
       - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
 
 networks:
@@ -285,3 +299,37 @@ Para que el orquestador y los healthchecks de Traefik y Docker funcionen de mane
 2. **Fase 2 (Optimización con Caché Redis):**
    - Se levanta Redis en `pdf-infrastructure` mediante `docker compose --profile cache up -d redis`.
    - El orquestador (`api`) o los servicios consultan `REDIS_URL` para almacenar en caché resultados frecuentes por hash de PDF.
+
+---
+
+## 6. Factor IX: Desechabilidad (Disposability — Twelve-Factor App)
+
+El principio de **Desechabilidad** establece que los procesos deben ser efímeros: capaces de iniciarse rápidamente y detenerse de forma limpia y segura ante cualquier evento de ciclo de vida (escalado, despliegues continuos, fallos de nodo o reinicios).
+
+### A. Requisitos de Arranque Rápido (Fast Startup)
+- Los contenedores deben pasar a estado saludable (`healthy`) en menos de **5 segundos**.
+- Las conexiones a bases de datos y caché deben gestionarse en pools asíncronos no bloqueantes.
+
+### B. Protocolo Obligatorio de Apagado Elegante (Graceful Shutdown)
+Cuando Docker o el orquestador envía una señal `SIGTERM` (`docker stop`), cada microservicio debe ejecutar el siguiente ciclo:
+1. **Interceptar `SIGTERM` / `SIGINT`:** El proceso principal (PID 1) debe capturar la señal de terminación sin delegarla a shells que la ignoren.
+2. **Corte de Tráfico en Readiness Probe:** Cambiar inmediatamente el endpoint de readiness (`/health/ready` o `/ready`) a `503 Service Unavailable`, informando a Traefik que retire la instancia del balanceo.
+3. **Drenado de Peticiones en Vuelo (In-Flight Draining):** Permitir que las peticiones HTTP que ya comenzaron a procesarse (ej. extracción de PDF en curso) finalicen exitosamente antes de salir.
+4. **Cierre Ordenado de Recursos:** Cerrar ordenadamente los clientes de persistencia (`client.close()` en MongoDB, `cache.close()` en Redis, y pools HTTP de `httpx`).
+5. **Salida Limpia:** El proceso debe finalizar con código de salida `0` (indicando terminación exitosa, nunca `137` forzado por `SIGKILL`).
+
+### C. Directivas Docker Obligatorias en Compose
+Todo contenedor en el ecosistema debe incluir en su configuración de Compose:
+- **`stop_grace_period: 30s` (o `35s` para `extractor`):** Otorga una ventana de tiempo suficiente para finalizar la extracción de PDFs pesados antes de que Docker envíe `SIGKILL`.
+- **`init: true`:** Habilita el init system de Docker (`tini`) como PID 1 para garantizar la propagación de señales Unix a los procesos hijos y la eliminación de procesos zombi.
+- **Forma `exec` en Dockerfile:** En caso de usar comandos bash o shell en el `CMD`, siempre anteponer `exec` (ej. `CMD ["sh", "-c", "exec uvicorn ..."]`) para que Uvicorn reciba `SIGTERM`.
+
+### D. Resiliencia y Cero Downtime en Traefik
+Para proteger a los clientes de fallos durante el apagado de réplicas:
+- Se configura el middleware `retry-on-shutdown` en Traefik:
+  ```yaml
+  labels:
+    - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=3"
+    - "traefik.http.middlewares.retry-on-shutdown.retry.initialinterval=100ms"
+  ```
+- Si un contenedor se apaga mientras una petición estaba en tránsito, Traefik reenvía la solicitud de forma transparente a una réplica sana, garantizando **0% de error percibido por el cliente**.

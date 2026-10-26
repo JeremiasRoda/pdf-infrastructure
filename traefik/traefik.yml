@@ -18,6 +18,12 @@ api:
 # Endpoint de salud de Traefik (/ping)
 ping: {}
 
+# Ciclo de Vida y Desechabilidad (Factor IX - Twelve-Factor App)
+# Permite apagado elegante (graceful shutdown) esperando el drenado de peticiones activas
+lifeCycle:
+  requestAcceptGraceTimeout: 5s
+  graceTimeout: 10s
+
 # Configuración de Logs
 log:
   level: INFO
