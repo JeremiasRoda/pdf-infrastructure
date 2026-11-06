@@ -1,13 +1,13 @@
 # ==============================================================================
 # Docker Compose - Infraestructura Base Compartida
-# Cátedra: Desarrollo de Software - UTN FR San Rafael
 # ==============================================================================
 
 services:
   # ----------------------------------------------------------------------------
-  # Traefik v3.6 - Reverse Proxy, Ingress, Balanceador de Carga y Resiliencia
+  # Traefik v3.6 - Ingress Gateway, Balanceador de Carga y Resiliencia
   # Factor IX: init: true, stop_grace_period y ciclo de vida de drenado
   # Seguridad: Dashboard administrativo restringido a 127.0.0.1 (localhost)
+  # Proveedores: Consul Catalog (servicios) y Docker (dashboard interno)
   # ----------------------------------------------------------------------------
   traefik:
     image: traefik:v3.6
@@ -20,12 +20,14 @@ services:
       - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     volumes:
       # Montaje del socket de Docker en modo solo lectura (:ro) para descubrimiento dinámico
-      # ADVERTENCIA DE SEGURIDAD: El socket de Docker otorga visibilidad del daemon local.
-      # Se restringe a :ro y Traefik corre con exposedByDefault: false.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
     networks:
       - pdf-network
+    depends_on:
+      consul:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       # Router para el Dashboard vía hostname traefik.universidad.localhost
@@ -33,6 +35,43 @@ services:
       - "traefik.http.routers.traefik-dashboard.entrypoints=web"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
       - "traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080"
+
+  # ----------------------------------------------------------------------------
+  # HashiCorp Consul - Catálogo y Registro de Servicios Dinámico
+  # Servidor único para entorno local de desarrollo e integración con persistencia
+  # Interfaz web y API REST en puerto 8500 (restringido a 127.0.0.1)
+  # ----------------------------------------------------------------------------
+  consul:
+    image: hashicorp/consul:1.20.2
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    command:
+      - "agent"
+      - "-server"
+      - "-bootstrap-expect=1"
+      - "-ui"
+      - "-client=0.0.0.0"
+      - "-bind=0.0.0.0"
+      - "-data-dir=/consul/data"
+    ports:
+      # Restringido estrictamente a loopback local por seguridad
+      - "127.0.0.1:${CONSUL_HTTP_PORT:-8500}:8500"
+    volumes:
+      - consul_data:/consul/data
+    networks:
+      - pdf-network
+    healthcheck:
+      test: ["CMD", "consul", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
 
   # ----------------------------------------------------------------------------
   # Dragonfly Cache (Reemplazo multi-threaded de Redis de alto rendimiento)
@@ -64,6 +103,9 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
+
+volumes:
+  consul_data:
 
 networks:
   pdf-network:

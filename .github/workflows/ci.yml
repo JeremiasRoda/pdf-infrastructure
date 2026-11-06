@@ -38,6 +38,7 @@ jobs:
           touch ../pdf-extractor-service/Dockerfile ../pdf-document-service/Dockerfile ../pdf-api-service/Dockerfile
           docker compose -f docker-compose.integration.yml config --quiet
 
-      - name: Validar Formato YAML de Traefik
+      - name: Validar Formato YAML de Traefik y Middlewares
         run: |
           python3 -c "import yaml; yaml.safe_load(open('traefik/traefik.yml'))"
+          python3 -c "import yaml; yaml.safe_load(open('traefik/dynamic/middlewares.yml'))"

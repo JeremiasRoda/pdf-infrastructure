@@ -1,23 +1,110 @@
 # ==============================================================================
-# Docker Compose - Integración Completa del Sistema 'pdf-extractext'
-# Cátedra: Desarrollo de Software - UTN FR San Rafael
-# Repositorios hermanos asumidos:
-#   ../pdf-extractor-service
-#   ../pdf-document-service
-#   ../pdf-api-service
+# Docker Compose - Integración Completa con HashiCorp Consul y Traefik v3.6
 # ==============================================================================
 
 services:
   # ----------------------------------------------------------------------------
+  # Traefik v3.6 - Ingress Gateway y Balanceador de Carga
+  # Integra el proveedor 'consulCatalog' para descubrimiento dinámico de microservicios
+  # Mantiene 'docker' exclusivamente para el dashboard interno
+  # ----------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.6
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-80}:80"
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    networks:
+      - pdf-network
+    depends_on:
+      consul:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`${TRAEFIK_DASHBOARD_DOMAIN:-traefik.universidad.localhost}`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=web"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080"
+
+  # ----------------------------------------------------------------------------
+  # HashiCorp Consul - Catálogo y Registro Dinámico de Servicios
+  # Servidor único con almacenamiento persistente para entorno local e integración
+  # ----------------------------------------------------------------------------
+  consul:
+    image: hashicorp/consul:1.20.2
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    command:
+      - "agent"
+      - "-server"
+      - "-bootstrap-expect=1"
+      - "-ui"
+      - "-client=0.0.0.0"
+      - "-bind=0.0.0.0"
+      - "-data-dir=/consul/data"
+    ports:
+      - "127.0.0.1:${CONSUL_HTTP_PORT:-8500}:8500"
+    volumes:
+      - consul_data:/consul/data
+    networks:
+      - pdf-network
+    healthcheck:
+      test: ["CMD", "consul", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # Consul Registrator - Sincronizador Dinámico de Contenedores Docker a Consul
+  # Detecta inicio, detención y escalado en tiempo real; registra IPs individuales
+  # ----------------------------------------------------------------------------
+  registrator:
+    build:
+      context: ./registrator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - pdf-network
+    environment:
+      - CONSUL_HTTP_ADDR=http://consul:8500
+      - DOCKER_SOCKET_PATH=/var/run/docker.sock
+      - TARGET_NETWORK=pdf-network
+      - RECONCILE_INTERVAL=10
+    depends_on:
+      consul:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
+
+  # ----------------------------------------------------------------------------
   # Microservicio Extractor (Stateless y Escalable Horizontalmente)
   # Factor IX: init: true para propagar SIGTERM y stop_grace_period para drenado
-  # Patrones: Rate Limiting, Circuit Breaker y Retry configurados en Traefik
+  # Descubierto dinámicamente por Traefik a través del catálogo de Consul
   # ----------------------------------------------------------------------------
   extractor:
     build:
       context: ../pdf-extractor-service
       dockerfile: Dockerfile
-    # Sin container_name para permitir 'docker compose ... --scale extractor=5'
     restart: unless-stopped
     init: true
     stop_grace_period: 35s
@@ -42,49 +129,8 @@ services:
       retries: 3
       start_period: 5s
     labels:
-      - "traefik.enable=true"
-
-      # ------------------------------------------------------------------------
-      # Definición de Middlewares de Resiliencia en Traefik v3.6
-      # Orden de Ejecución: RateLimit -> CircuitBreaker -> Retry -> Backend
-      # ------------------------------------------------------------------------
-      # 1. Rate Limiting: Protege de tráfico excesivo en frontera (HTTP 429)
-      - "traefik.http.middlewares.rate-limit-extract.ratelimit.average=${RATE_LIMIT_EXTRACT_AVERAGE:-10}"
-      - "traefik.http.middlewares.rate-limit-extract.ratelimit.burst=${RATE_LIMIT_EXTRACT_BURST:-20}"
-      - "traefik.http.middlewares.rate-limit-extract.ratelimit.period=1s"
-      - "traefik.http.middlewares.rate-limit-extract.ratelimit.sourcecriterion.ipstrategy.depth=0"
-
-      # 2. Circuit Breaker: Abre el circuito ante fallos persistentes de red o 5xx (HTTP 503)
-      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.expression=${CIRCUIT_BREAKER_EXPRESSION:-NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25}"
-      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.checkperiod=5s"
-      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.fallbackduration=10s"
-      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.recoveryduration=5s"
-
-      # 3. Retry: Reintenta fallos transitorios de red/conexión ante apagado de réplicas
-      - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=${RETRY_ATTEMPTS:-3}"
-      - "traefik.http.middlewares.retry-on-shutdown.retry.initialinterval=100ms"
-
-      # ------------------------------------------------------------------------
-      # Routers Traefik
-      # ------------------------------------------------------------------------
-      # Router A (Salud / Readiness - Prioridad Alta, SIN RateLimit para evitar bloqueos)
-      - "traefik.http.routers.extractor-health.rule=Host(`extractor.universidad.localhost`) && (Path(`/health`) || PathPrefix(`/health/`))"
-      - "traefik.http.routers.extractor-health.priority=100"
-      - "traefik.http.routers.extractor-health.entrypoints=web"
-      - "traefik.http.routers.extractor-health.service=extractor"
-
-      # Router B (Tráfico General de Negocio /extract - Prioridad Normal con Patrones)
-      - "traefik.http.routers.extractor.rule=Host(`extractor.universidad.localhost`)"
-      - "traefik.http.routers.extractor.priority=10"
-      - "traefik.http.routers.extractor.entrypoints=web"
-      - "traefik.http.routers.extractor.middlewares=rate-limit-extract,circuit-breaker-extractor,retry-on-shutdown"
-      - "traefik.http.routers.extractor.service=extractor"
-
-      # Servicio Balanceador y Health Check de Traefik
-      - "traefik.http.services.extractor.loadbalancer.server.port=8000"
-      - "traefik.http.services.extractor.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.extractor.loadbalancer.healthcheck.interval=2s"
-      - "traefik.http.services.extractor.loadbalancer.healthcheck.timeout=1s"
+      # Desactivado para Docker Provider para evitar colisión/duplicación con ConsulCatalog
+      - "traefik.enable=false"
 
   # ----------------------------------------------------------------------------
   # Base de Datos MongoDB (Persistencia aislada para Document Service)
@@ -112,6 +158,7 @@ services:
 
   # ----------------------------------------------------------------------------
   # Microservicio Document Service (Gestión de Documentos y Persistencia)
+  # Descubierto dinámicamente por Traefik a través del catálogo de Consul
   # ----------------------------------------------------------------------------
   documents:
     build:
@@ -142,28 +189,12 @@ services:
       retries: 3
       start_period: 5s
     labels:
-      - "traefik.enable=true"
-      # Router A (Salud / Readiness - Prioridad Alta)
-      - "traefik.http.routers.documents-health.rule=Host(`documents.universidad.localhost`) && (Path(`/health`) || PathPrefix(`/health/`))"
-      - "traefik.http.routers.documents-health.priority=100"
-      - "traefik.http.routers.documents-health.entrypoints=web"
-      - "traefik.http.routers.documents-health.service=documents"
-
-      # Router B (CRUD Documentos - Prioridad Normal)
-      - "traefik.http.routers.documents.rule=Host(`documents.universidad.localhost`)"
-      - "traefik.http.routers.documents.priority=10"
-      - "traefik.http.routers.documents.entrypoints=web"
-      - "traefik.http.routers.documents.middlewares=retry-on-shutdown"
-      - "traefik.http.routers.documents.service=documents"
-
-      # Servicio Balanceador y Health Check de Traefik
-      - "traefik.http.services.documents.loadbalancer.server.port=8000"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.interval=2s"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.timeout=1s"
+      # Desactivado para Docker Provider para evitar colisión con ConsulCatalog
+      - "traefik.enable=false"
 
   # ----------------------------------------------------------------------------
   # Microservicio API Orchestrator (Punto de Entrada del Pipeline)
+  # Descubierto dinámicamente por Traefik a través del catálogo de Consul
   # ----------------------------------------------------------------------------
   api:
     build:
@@ -200,36 +231,8 @@ services:
       retries: 3
       start_period: 5s
     labels:
-      - "traefik.enable=true"
-      # Middlewares para la API
-      - "traefik.http.middlewares.rate-limit-api.ratelimit.average=${RATE_LIMIT_API_AVERAGE:-20}"
-      - "traefik.http.middlewares.rate-limit-api.ratelimit.burst=${RATE_LIMIT_API_BURST:-40}"
-      - "traefik.http.middlewares.rate-limit-api.ratelimit.period=1s"
-      - "traefik.http.middlewares.rate-limit-api.ratelimit.sourcecriterion.ipstrategy.depth=0"
-
-      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.expression=${CIRCUIT_BREAKER_EXPRESSION:-NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25}"
-      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.checkperiod=5s"
-      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.fallbackduration=10s"
-      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.recoveryduration=5s"
-
-      # Router A (Salud / Readiness - Prioridad Alta, SIN RateLimit)
-      - "traefik.http.routers.api-health.rule=Host(`api.universidad.localhost`) && (Path(`/health`) || Path(`/ready`))"
-      - "traefik.http.routers.api-health.priority=100"
-      - "traefik.http.routers.api-health.entrypoints=web"
-      - "traefik.http.routers.api-health.service=api"
-
-      # Router B (Procesamiento /process - Prioridad Normal con Patrones)
-      - "traefik.http.routers.api.rule=Host(`api.universidad.localhost`)"
-      - "traefik.http.routers.api.priority=10"
-      - "traefik.http.routers.api.entrypoints=web"
-      - "traefik.http.routers.api.middlewares=rate-limit-api,circuit-breaker-api,retry-on-shutdown"
-      - "traefik.http.routers.api.service=api"
-
-      # Servicio Balanceador y Health Check de Traefik
-      - "traefik.http.services.api.loadbalancer.server.port=8000"
-      - "traefik.http.services.api.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.api.loadbalancer.healthcheck.interval=2s"
-      - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
+      # Desactivado para Docker Provider para evitar colisión con ConsulCatalog
+      - "traefik.enable=false"
 
   # ----------------------------------------------------------------------------
   # Dragonfly Cache (Perfil 'cache' para optimización POST-BASELINE)
@@ -262,6 +265,7 @@ services:
 
 volumes:
   mongodb_data:
+  consul_data:
 
 networks:
   pdf-network:

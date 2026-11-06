@@ -1,5 +1,5 @@
 # ==============================================================================
-# Traefik v3.6 - Configuración Estática
+# Traefik v3.6 - Configuración Estática con HashiCorp Consul Catalog
 # Infraestructura de Microservicios PDF - UTN FRSR
 # ==============================================================================
 
@@ -38,9 +38,22 @@ accessLog:
 
 # Proveedores de configuración dinámica
 providers:
+  # 1. Proveedor de Archivos Dinámicos (Middlewares Centralizados de Resiliencia)
+  file:
+    directory: "/etc/traefik/dynamic"
+    watch: true
+
+  # 2. Proveedor Docker (Reservado exclusivamente para Dashboard Interno de Traefik)
   docker:
-    # Montaje solo lectura (:ro) en docker-compose.yml. Traefik solo lee eventos de contenedores.
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     network: "pdf-network"
     watch: true
+
+  # 3. Proveedor HashiCorp Consul Catalog (Descubrimiento y balanceo dinámico de Microservicios)
+  consulCatalog:
+    endpoint:
+      address: "consul:8500"
+    prefix: "traefik"
+    refreshInterval: "2s"
+    exposedByDefault: false

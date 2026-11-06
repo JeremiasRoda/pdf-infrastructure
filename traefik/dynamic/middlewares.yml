@@ -1,0 +1,57 @@
+# ==============================================================================
+# Traefik v3.6 - Middlewares Dinámicos de Resiliencia
+# Cátedra: Desarrollo de Software - UTN FR San Rafael
+# ==============================================================================
+
+http:
+  middlewares:
+    # --------------------------------------------------------------------------
+    # 1. Rate Limiting en Ingress (HTTP 429 Too Many Requests)
+    # Protege de ráfagas abusivas en la frontera antes de llegar al backend
+    # --------------------------------------------------------------------------
+    rate-limit-extract:
+      rateLimit:
+        average: 10
+        burst: 20
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+
+    rate-limit-api:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 0
+
+    # --------------------------------------------------------------------------
+    # 2. Circuit Breaker (HTTP 503 Service Unavailable)
+    # Corta el tráfico hacia backends degradados cuando la tasa de fallos
+    # de red o errores 5xx supera los umbrales configurados
+    # --------------------------------------------------------------------------
+    circuit-breaker-extractor:
+      circuitBreaker:
+        expression: "NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25"
+        checkPeriod: 5s
+        fallbackDuration: 10s
+        recoveryDuration: 5s
+
+    circuit-breaker-api:
+      circuitBreaker:
+        expression: "NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25"
+        checkPeriod: 5s
+        fallbackDuration: 10s
+        recoveryDuration: 5s
+
+    # --------------------------------------------------------------------------
+    # 3. Retry (Reintentos ante fallos transitorios de red/conexión)
+    # Reintenta solicitudes cuando el backend no responde a nivel de socket
+    # (p. ej. durante el drenado o reinicio de réplicas en Factor IX)
+    # --------------------------------------------------------------------------
+    retry-on-shutdown:
+      retry:
+        attempts: 3
+        initialInterval: 100ms
