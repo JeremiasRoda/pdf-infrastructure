@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Benchmark Vegeta - Carga Fija Constante (50 req/s, 30s)
-# Cátedra: Desarrollo de Software - UTN FR San Rafael
 # ==============================================================================
 # Perfil:
 # - Rate: 50 requests/segundo constante

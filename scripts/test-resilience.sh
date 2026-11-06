@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script de Demostración de Resiliencia y Alta Disponibilidad
-# UTN FR San Rafael - Ecosistema 'pdf-extractext'
+# Ecosistema 'pdf-extractext'
 # ==============================================================================
 # Objetivo:
 # 1. Comprobar que existen múltiples réplicas del servicio 'extractor'.

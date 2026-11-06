@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
     Benchmark Vegeta - Carga Fija Constante (50 req/s, 30s).
-    Cátedra: Desarrollo de Software - UTN FR San Rafael.
 .DESCRIPTION
     Ejecuta un ataque de carga con tasa fija de 50 peticiones/segundo durante 30s (1500 solicitudes),
     rotando entre los 4 PDFs del dataset oficial y generando el reporte de percentiles y errores.

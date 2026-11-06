@@ -29,6 +29,8 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_URL=redis://redis:6379/0
       - CACHE_ENABLED=${CACHE_ENABLED:-false}
+      - METRICS_ENABLED=true
+      - MAX_UPLOAD_MB=25
     deploy:
       resources:
         limits:
@@ -93,7 +95,8 @@ services:
     environment:
       - PORT=8000
       - MONGODB_URI=mongodb://mongodb:27017
-      - MONGODB_DATABASE=pdf_extractext
+      - MONGODB_DATABASE=${MONGODB_DATABASE:-pdf_extractext_integration}
+      - MONGODB_TIMEOUT_MS=1500
     depends_on:
       mongodb:
         condition: service_healthy
@@ -136,6 +139,10 @@ services:
       - EXTRACTOR_URL=http://extractor:8000
       - DOCUMENT_SERVICE_URL=http://documents:8000
       - REDIS_URL=redis://redis:6379/0
+      - MAX_UPLOAD_BYTES=25000000
+      - EXTRACTOR_TIMEOUT_SECONDS=30
+      - DOCUMENT_TIMEOUT_SECONDS=5
+      - READY_CHECK_TIMEOUT_SECONDS=2
     depends_on:
       extractor:
         condition: service_healthy

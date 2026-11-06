@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
     Script de Importacion de PDFs de Estres para Benchmarks (k6 / Vegeta).
-    Catedra: Desarrollo de Software - UTN FR San Rafael.
 .DESCRIPTION
     Copia los 4 PDFs desde el monolito '../pdf-extractext/tests/stress/pdfs' hacia './load-tests/pdfs/'.
     Si el monolito aun no esta clonado, genera 4 PDFs validos de prueba para habilitar la ejecucion inmediata.

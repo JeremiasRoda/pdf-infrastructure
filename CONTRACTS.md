@@ -277,17 +277,24 @@ Para que el orquestador y los healthchecks de Traefik y Docker funcionen de mane
        "service": "extractor"  // o "documents", o "api"
      }
      ```
-2. **Extractor Service:**
-   - `POST /extract`: recibe el archivo PDF como cuerpo binario directo (`Content-Type: application/pdf` obligatorio, iniciando con la firma `%PDF`) y retorna:
+2. **Extractor Service (`extractor`):**
+   - `POST /extract`: recibe el archivo PDF como cuerpo binario directo (`Content-Type: application/pdf` obligatorio, iniciando con `%PDF`) y retorna:
      ```json
      {
        "content": "Texto extraído en formato Markdown...",
        "page_count": 5
      }
      ```
-3. **Document Service:**
-   - `POST /documents`: persiste metadatos y texto extraído en MongoDB.
-   - `GET /documents/{id}`: recupera el documento almacenado.
+   - `GET /health/ready`: `200 OK` (degraded si no hay Redis, o 503 si el servicio está cerrándose).
+   - `GET /metrics`: métricas Prometheus cuando `METRICS_ENABLED=true` (contador de requests a `/extract`, etc.).
+3. **Document Service (`documents`):**
+   - `POST /documents`: persiste metadatos y Markdown en MongoDB. Retorna `201 Created` (o `200 OK` si el checksum ya existía).
+   - `GET /documents/by-checksum/{checksum}`: consulta por SHA-256 del PDF.
+   - `GET /documents/{id}`: consulta por ObjectId de MongoDB.
+   - `GET /health/ready`: `200 OK` si MongoDB responde; `503 Service Unavailable` si MongoDB no está disponible.
+4. **API Orchestrator (`api`):**
+   - `POST /process`: punto de entrada público principal. Acepta `application/pdf` binario o multipart con `file`. Orquesta el pipeline (consulta Documents por checksum -> si existe, retorna `source: "existing"`; si no existe, llama al Extractor, guarda en Documents y retorna `source: "extracted"`).
+   - `GET /ready`: consulta en paralelo el readiness de extractor y documents. Retorna `200 OK` si ambos están listos, o `503` detallando dependencias.
 
 ---
 

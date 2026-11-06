@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script de Importación de PDFs de Estrés para Benchmarks (k6 / Vegeta)
-# Cátedra: Desarrollo de Software - UTN FR San Rafael
 # ==============================================================================
 
 set -euo pipefail

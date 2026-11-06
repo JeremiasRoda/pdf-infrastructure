@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Monitor de Recursos en Vivo para Benchmarks de Carga (k6 / Vegeta)
-# Cátedra: Desarrollo de Software - UTN FR San Rafael
 # ==============================================================================
 # Monitorea en tiempo real el consumo de CPU, RAM e I/O de:
 # - Todas las réplicas de 'extractor'

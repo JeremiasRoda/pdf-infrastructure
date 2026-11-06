@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
     Demostración de Resiliencia, Balanceo y Tolerancia a Fallos con Traefik v3.
-    Cátedra: Desarrollo de Software - UTN FR San Rafael.
 .DESCRIPTION
     1. Verifica la presencia de Traefik v3 y réplicas del servicio 'extractor'.
     2. Detiene intencionalmente una réplica activa (Inyección de falla).

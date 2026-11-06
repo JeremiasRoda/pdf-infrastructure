@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script de inicialización de la red externa Docker para 'pdf-infrastructure'
-# UTN FR San Rafael - Arquitectura de Microservicios
+# Arquitectura de Microservicios
 # ==============================================================================
 
 set -euo pipefail

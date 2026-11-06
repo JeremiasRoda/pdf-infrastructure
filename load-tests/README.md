@@ -10,7 +10,7 @@ Esta suite implementa los protocolos formales de evaluación de rendimiento y es
 
 ---
 
-## 📋 Estructura de la Suite
+## Estructura de la Suite
 
 ```
 load-tests/
@@ -29,7 +29,7 @@ load-tests/
 
 ---
 
-## 🛠️ Requisitos Previos y Herramientas
+## Requisitos Previos y Herramientas
 
 Para ejecutar las pruebas en tu máquina, puedes usar los binarios locales o las imágenes oficiales de Docker:
 
@@ -42,7 +42,7 @@ Para ejecutar las pruebas en tu máquina, puedes usar los binarios locales o las
 
 ---
 
-## 📥 Paso 1: Preparación del Dataset de PDFs
+## Paso 1: Preparación del Dataset de PDFs
 
 Antes de lanzar los benchmarks, debemos contar con los 4 archivos PDF de prueba en `load-tests/pdfs/`.
 
@@ -62,7 +62,7 @@ Ejecuta el script de importación según tu sistema operativo:
 
 ---
 
-## 🔬 Protocolo de Evaluación: Baseline vs. 5 Réplicas
+## Protocolo de Evaluación: Baseline vs. 5 Réplicas
 
 Para el informe de la cátedra, cada prueba debe ejecutarse en **dos escenarios**:
 
@@ -81,7 +81,7 @@ docker compose -f docker-compose.integration.yml up -d --scale extractor=5
 
 ---
 
-## 📊 Monitoreo de Recursos en Tiempo Real
+## Monitoreo de Recursos en Tiempo Real
 
 Durante la ejecución de cualquier benchmark, abre una terminal secundaria y ejecuta el monitor en vivo para observar la saturación de CPU y consumo de memoria por réplica:
 
@@ -96,7 +96,7 @@ Durante la ejecución de cualquier benchmark, abre una terminal secundaria y eje
 
 ---
 
-## 🚀 Prueba 1: k6 Spike Test (100 VUs)
+## Prueba 1: k6 Spike Test (100 VUs)
 
 ### Perfil de Carga:
 - **0 a 10s:** Subida abrupta de 0 a 100 usuarios virtuales (Spike).
@@ -125,7 +125,7 @@ docker run --rm -i \
 
 ---
 
-## ⚡ Prueba 2: Vegeta Carga Fija Sostenida (50 req/s)
+## Prueba 2: Vegeta Carga Fija Sostenida (50 req/s)
 
 ### Perfil de Carga:
 - **Tasa:** 50 peticiones/segundo constantes.
@@ -149,7 +149,7 @@ El resultado se mostrará en pantalla y se guardará automáticamente en `load-t
 
 ---
 
-## 📈 Plantilla de Tabla Comparativa para el Informe Final
+## Plantilla de Tabla Comparativa para el Informe Final
 
 Completa esta tabla comparativa con los resultados obtenidos en tus corridas para presentar ante la cátedra:
 
@@ -167,7 +167,7 @@ Completa esta tabla comparativa con los resultados obtenidos en tus corridas par
 
 ---
 
-## 🛑 Regla de Oro sobre Redis y Pruebas Baseline
+## Regla de Oro sobre Redis y Pruebas Baseline
 
 > [!WARNING]
 > Según las reglas de la cátedra UTN FRSR:
