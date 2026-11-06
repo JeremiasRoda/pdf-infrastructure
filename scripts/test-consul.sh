@@ -24,21 +24,52 @@ CONSUL_API="http://127.0.0.1:8500"
 TRAEFIK_API="http://127.0.0.1:8080"
 TEST_PDF="./load-tests/pdfs/doc1.pdf"
 
-# Guardar cantidad inicial de réplicas
-INITIAL_EXTRACTORS=($(docker ps --filter "name=extractor" --format "{{.ID}}"))
+# ------------------------------------------------------------------------------
+# COMPROBACIÓN PREVIA: Verificar entorno de integración
+# ------------------------------------------------------------------------------
+if ! docker info > /dev/null 2>&1; then
+    echo -e "${RED}[ERROR] El daemon de Docker no está en ejecución.${NC}"
+    echo -e "Inicie Docker y el entorno de integración antes de ejecutar esta prueba."
+    exit 1
+fi
+
+INITIAL_EXTRACTORS=($(docker compose -f docker-compose.integration.yml ps -q extractor 2>/dev/null || true))
 INITIAL_COUNT="${#INITIAL_EXTRACTORS[@]}"
-if [ "$INITIAL_COUNT" -lt 2 ]; then
-    INITIAL_COUNT=2
+
+if [ "$INITIAL_COUNT" -eq 0 ]; then
+    echo -e "${YELLOW}[AVISO] No se detectó un entorno de integración iniciado.${NC}"
+    echo -e "Debe iniciar previamente el clúster con: ${CYAN}docker compose -f docker-compose.integration.yml up -d${NC}"
+    echo -e "La prueba no modificará el entorno y se detiene sin alterar contenedores."
+    exit 1
 fi
 
 cleanup() {
     echo -e "\n${CYAN}======================================================================${NC}"
     echo -e "${CYAN}                    RESTAURACIÓN DEL ENTORNO                          ${NC}"
     echo -e "${CYAN}======================================================================${NC}"
+    echo -e "Restableciendo el clúster a exactamente ${INITIAL_COUNT} réplicas de extractor..."
     docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor="${INITIAL_COUNT}" extractor > /dev/null 2>&1 || true
-    echo -e "${GREEN}[OK] Clúster restablecido a ${INITIAL_COUNT} réplicas de extractor.${NC}"
+    echo -e "${GREEN}[OK] Clúster restablecido a ${INITIAL_COUNT} réplicas originales de extractor.${NC}"
 }
 trap cleanup EXIT
+
+# Función de sondeo periódico con timeout
+wait_for_condition() {
+    local description="$1"
+    local timeout_sec="$2"
+    local check_cmd="$3"
+    local elapsed=0
+    echo -e "Esperando: ${description} (timeout ${timeout_sec}s)..."
+    while [ "$elapsed" -lt "$timeout_sec" ]; do
+        if eval "$check_cmd" > /dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo -e "${RED}[TIMEOUT] Condición no alcanzada tras ${timeout_sec}s: ${description}${NC}"
+    return 1
+}
 
 echo -e "${CYAN}======================================================================${NC}"
 echo -e "${CYAN}   UTN FRSR - SUITE DE VALIDACIÓN AUTOMATIZADA: HASHICORP CONSUL      ${NC}"
@@ -112,17 +143,15 @@ done
 echo -e "\n${YELLOW}[TEST 2] Evaluando escalado horizontal del Extractor a 5 réplicas...${NC}"
 docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=5 extractor > /dev/null
 
-echo -e "Esperando 6s para sincronización de Registrator, Consul y Traefik..."
-sleep 6
+wait_for_condition "Consul registra exactamente 5 réplicas passing de extractor" 20 \
+    '[ $(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true" | grep -oE "\"ServiceID\":\"extractor-[a-f0-9]+\"" | wc -l) -eq 5 ]' || {
+    echo -e "${RED}✘ FALLO: Se esperaban exactamente 5 instancias saludables en Consul.${NC}"
+    exit 1
+}
 
 EXTRACTOR_PASSING=$(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true")
 PASSING_COUNT=$(echo "$EXTRACTOR_PASSING" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | wc -l)
 echo -e "Instancias saludables de 'extractor' en Consul: ${GREEN}${PASSING_COUNT} / 5${NC}"
-
-if [ "$PASSING_COUNT" -ne 5 ]; then
-    echo -e "${RED}✘ FALLO: Se esperaban exactamente 5 instancias saludables en Consul, encontradas: ${PASSING_COUNT}.${NC}"
-    exit 1
-fi
 
 # Validar 5 IDs únicos de instancia
 UNIQUE_IDS=($(echo "$EXTRACTOR_PASSING" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | cut -d'"' -f4 | sort -u))
@@ -140,32 +169,20 @@ if [ "${#UNIQUE_IPS[@]}" -ne 5 ]; then
 fi
 echo -e "${GREEN}✔ 5 IPs individuales verificadas:${NC} ${UNIQUE_IPS[*]}"
 
-# Verificar que Traefik v3 detectó las 5 instancias en su pool de servidores
-TRAEFIK_SERVICE_JSON=$(curl -s "${TRAEFIK_API}/api/http/services/extractor@consulcatalog" || echo "")
-if [ -n "$TRAEFIK_SERVICE_JSON" ] && echo "$TRAEFIK_SERVICE_JSON" | grep -q "extractor@consulcatalog"; then
-    TRAEFIK_SERVERS_COUNT=$(echo "$TRAEFIK_SERVICE_JSON" | grep -o '"url":' | wc -l)
-    echo -e "Servidores balanceados en Traefik (extractor@consulcatalog): ${GREEN}${TRAEFIK_SERVERS_COUNT} / 5${NC}"
-    if [ "$TRAEFIK_SERVERS_COUNT" -eq 5 ]; then
-        echo -e "${GREEN}✔ Traefik v3 balancea exactamente sobre las 5 instancias saludables.${NC}"
-    else
-        echo -e "${YELLOW}ℹ Traefik reporta ${TRAEFIK_SERVERS_COUNT} servidores activos en el catálogo.${NC}"
-    fi
-else
-    # Fallback si Traefik agrupa la lista completa en /api/http/services
-    TRAEFIK_SERVICES=$(curl -s "${TRAEFIK_API}/api/http/services")
-    if echo "$TRAEFIK_SERVICES" | grep -q "extractor@consulcatalog"; then
-        echo -e "${GREEN}✔ Traefik v3 integró el backend dinámico 'extractor@consulcatalog'.${NC}"
-    else
-        echo -e "${RED}✘ Traefik no detectó el servicio desde Consul Catalog.${NC}"
-        exit 1
-    fi
-fi
+# Verificar que Traefik v3 detectó exactamente las 5 instancias en su pool de servidores
+wait_for_condition "Traefik detecta exactamente 5 backends en extractor@consulcatalog" 20 \
+    '[ $(curl -s "${TRAEFIK_API}/api/http/services/extractor@consulcatalog" | grep -o "\"url\":" | wc -l) -eq 5 ]' || {
+    TRAEFIK_COUNT=$(curl -s "${TRAEFIK_API}/api/http/services/extractor@consulcatalog" | grep -o '"url":' | wc -l || echo "0")
+    echo -e "${RED}✘ FALLO: Traefik no detectó exactamente 5 backends activos (encontrados: ${TRAEFIK_COUNT}).${NC}"
+    exit 1
+}
+echo -e "${GREEN}✔ Traefik v3 balancea exactamente sobre 5 backends saludables.${NC}"
 
 # ------------------------------------------------------------------------------
 # TEST 3: Baja Controlada (Detención de Réplica y Retiro del Catálogo)
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}[TEST 3] Evaluando baja controlada y retiro de catálogo al detener réplica...${NC}"
-CONTAINERS=($(docker ps --filter "name=extractor" --format "{{.ID}}"))
+CONTAINERS=($(docker compose -f docker-compose.integration.yml ps -q extractor))
 VICTIM_CID="${CONTAINERS[0]}"
 VICTIM_SHORT="${VICTIM_CID:0:12}"
 VICTIM_NAME=$(docker inspect -f '{{.Name}}' "$VICTIM_CID" | tr -d '/')
@@ -173,19 +190,21 @@ VICTIM_NAME=$(docker inspect -f '{{.Name}}' "$VICTIM_CID" | tr -d '/')
 echo -e "Deteniendo contenedor réplica ${CYAN}${VICTIM_NAME} (${VICTIM_SHORT})${NC}..."
 docker stop "$VICTIM_CID" > /dev/null
 
-echo -e "Esperando 4s para propagación de desregistro en Consul..."
-sleep 4
+wait_for_condition "Consul actualiza a exactamente 4 réplicas passing tras detención" 15 \
+    '[ $(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true" | grep -oE "\"ServiceID\":\"extractor-[a-f0-9]+\"" | wc -l) -eq 4 ]' || {
+    echo -e "${RED}✘ FALLO: Consul no redujo a 4 instancias passing tras detener la réplica.${NC}"
+    exit 1
+}
 
 POST_STOP_PASSING=$(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | wc -l)
 echo -e "Instancias saludables restantes en Consul: ${GREEN}${POST_STOP_PASSING} / 4${NC}"
 
-POST_STOP_INSTANCES=$(curl -s "${CONSUL_API}/v1/agent/services")
-if echo "$POST_STOP_INSTANCES" | grep -q "extractor-${VICTIM_SHORT}"; then
-    HEALTH_STATE=$(curl -s "${CONSUL_API}/v1/health/checks/extractor" | grep -oE '"Status":"(passing|critical)"' | head -n 1 || echo "")
-    echo -e "Estado de salud en Consul para réplica detenida: ${YELLOW}${HEALTH_STATE}${NC}"
-else
-    echo -e "${GREEN}✔ Réplica ${VICTIM_SHORT} dada de baja exitosamente del catálogo de Consul.${NC}"
-fi
+wait_for_condition "Traefik reduce a exactamente 4 backends activos" 15 \
+    '[ $(curl -s "${TRAEFIK_API}/api/http/services/extractor@consulcatalog" | grep -o "\"url\":" | wc -l) -eq 4 ]' || {
+    echo -e "${RED}✘ FALLO: Traefik no redujo a 4 backends activos tras la baja de la réplica.${NC}"
+    exit 1
+}
+echo -e "${GREEN}✔ Traefik v3 redujo su pool a exactamente 4 servidores activos.${NC}"
 
 # Comprobar que el endpoint sigue respondiendo a través de las réplicas restantes
 EXTRACT_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:80/extract" \
@@ -207,34 +226,38 @@ fi
 echo -e "\n${YELLOW}[TEST 4] Evaluando recuperación y auto-registro de réplica iniciada...${NC}"
 docker start "$VICTIM_CID" > /dev/null
 
-echo -e "Esperando 5s para detección de Docker event y auto-registro..."
-sleep 5
-
-RECOVERED_SERVICES=$(curl -s "${CONSUL_API}/v1/agent/services")
-if echo "$RECOVERED_SERVICES" | grep -q "extractor-${VICTIM_SHORT}"; then
-    echo -e "${GREEN}✔ Réplica ${VICTIM_SHORT} se auto-registró correctamente en Consul tras reinicio.${NC}"
-else
-    echo -e "${RED}✘ Réplica no volvió a aparecer en Consul.${NC}"
+wait_for_condition "Consul vuelve a detectar 5 réplicas passing tras reinicio" 20 \
+    '[ $(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true" | grep -oE "\"ServiceID\":\"extractor-[a-f0-9]+\"" | wc -l) -eq 5 ]' || {
+    echo -e "${RED}✘ FALLO: La réplica reiniciada no alcanzó estado passing en Consul.${NC}"
     exit 1
-fi
+}
+
+wait_for_condition "Traefik vuelve a balancear sobre exactamente 5 backends" 20 \
+    '[ $(curl -s "${TRAEFIK_API}/api/http/services/extractor@consulcatalog" | grep -o "\"url\":" | wc -l) -eq 5 ]' || {
+    echo -e "${RED}✘ FALLO: Traefik no reincorporó los 5 backends activos.${NC}"
+    exit 1
+}
+echo -e "${GREEN}✔ Réplica ${VICTIM_SHORT} recuperada y reintegrada a Consul y Traefik (5 backends activos).${NC}"
 
 # ------------------------------------------------------------------------------
 # TEST 5: Reinicio de Consul y Reconciliación de Estado
 # ------------------------------------------------------------------------------
 echo -e "\n${YELLOW}[TEST 5] Evaluando persistencia y reconciliación tras reinicio de Consul...${NC}"
-echo -e "Reiniciando contenedor 'consul'..."
-docker restart consul > /dev/null
+echo -e "Reiniciando servicio 'consul' mediante Docker Compose..."
+docker compose -f docker-compose.integration.yml restart consul > /dev/null
 
-echo -e "Esperando 6s para reconexión y reconciliación de Registrator..."
-sleep 6
-
-CONSUL_POST_RESTART=$(curl -s "${CONSUL_API}/v1/agent/services")
-if echo "$CONSUL_POST_RESTART" | grep -q '"Service":"extractor"'; then
-    echo -e "${GREEN}✔ Registrator reconcilió exitosamente el catálogo tras el reinicio de Consul.${NC}"
-else
-    echo -e "${RED}✘ No se recuperaron los servicios tras reiniciar Consul.${NC}"
+wait_for_condition "Consul recupera líder electo tras reinicio" 25 \
+    '[ -n "$(curl -s "${CONSUL_API}/v1/status/leader" | tr -d "\"" | tr -d "[:space:]")" ]' || {
+    echo -e "${RED}✘ FALLO: Consul no eligió líder tras reinicio.${NC}"
     exit 1
-fi
+}
+
+wait_for_condition "Registrator reconcilia las 5 réplicas en Consul" 25 \
+    '[ $(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true" | grep -oE "\"ServiceID\":\"extractor-[a-f0-9]+\"" | wc -l) -eq 5 ]' || {
+    echo -e "${RED}✘ FALLO: Registrator no reconcilió las 5 réplicas en Consul tras el reinicio.${NC}"
+    exit 1
+}
+echo -e "${GREEN}✔ Registrator reconcilió exitosamente las 5 réplicas tras el reinicio de Consul.${NC}"
 
 # ------------------------------------------------------------------------------
 # TEST 6: Ausencia de Routers Duplicados en Traefik API

@@ -1,7 +1,7 @@
 <#
 ==============================================================================
-Demostración de Resiliencia y Alta Disponibilidad
-Cátedra: Desarrollo de Software - UTN FR San Rafael
+Demostracion de Resiliencia y Alta Disponibilidad
+Catedra: Desarrollo de Software - UTN FR San Rafael
 ==============================================================================
 #>
 
@@ -12,23 +12,32 @@ $TestPdf = "load-tests/pdfs/doc1.pdf"
 $BurstCount = 20
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "   UTN FRSR - DEMOSTRACIÓN DE TOLERANCIA A FALLOS Y RESILIENCIA       " -ForegroundColor Cyan
+Write-Host "   UTN FRSR - DEMOSTRACION DE TOLERANCIA A FALLOS Y RESILIENCIA       " -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
-# 1. Verificar Traefik
+# 1. Verificar Docker y Traefik
+try {
+    docker info 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Docker offline" }
+} catch {
+    Write-Host "[ERROR] El daemon de Docker no esta en ejecucion." -ForegroundColor Red
+    Write-Host "Inicie Docker y el entorno antes de ejecutar esta prueba."
+    exit 1
+}
+
 try {
     $ping = Invoke-WebRequest -Uri "http://127.0.0.1:8080/ping" -UseBasicParsing -TimeoutSec 3
     Write-Host "[OK] Traefik v3 activo y escuchando." -ForegroundColor Green
 } catch {
-    Write-Host "[ERROR] Traefik no responde en 127.0.0.1:8080. Inicie con 'docker compose up -d'." -ForegroundColor Red
+    Write-Host "[AVISO] Traefik no responde en 127.0.0.1:8080. Inicie con 'docker compose up -d'." -ForegroundColor Yellow
     exit 1
 }
 
-# 2. Asegurar fixture PDF
+# 2. Asegurar fixture PDF con offsets exactos (183 bytes)
 if (-not (Test-Path $TestPdf)) {
     $parent = Split-Path -Parent $TestPdf
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-    $pdfMinimal = @"
+    $pdfMinimal = @'
 %PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -48,37 +57,33 @@ xref
 trailer
 << /Size 4 /Root 1 0 R >>
 startxref
-190
+183
 %%EOF
-"@
-    [System.IO.File]::WriteAllText($TestPdf, $pdfMinimal)
+'@
+    [System.IO.File]::WriteAllText($TestPdf, $pdfMinimal, [System.Text.Encoding]::ASCII)
 }
 
-$initialContainers = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
+$initialContainers = (docker compose -f docker-compose.integration.yml ps -q extractor 2>$null) -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
 $initialCount = $initialContainers.Count
-if ($initialCount -lt 3) { $initialCount = 3 }
+if ($initialCount -eq 0) {
+    Write-Host "[AVISO] No se detecto un entorno de integracion iniciado con replicas de extractor." -ForegroundColor Yellow
+    exit 1
+}
 
 try {
-    if ($initialContainers.Count -lt 2) {
-        Write-Host "Escalando a 3 réplicas base para pruebas..." -ForegroundColor Yellow
-        docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor | Out-Null
-        Start-Sleep -Seconds 3
-        $initialContainers = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
-    }
-
     Write-Host "Instancias activas de extractor: $($initialContainers.Count)" -ForegroundColor Green
 
-    # Inyección de Falla
+    # Inyeccion de Falla
     $victimId = $initialContainers[0]
     $victimName = (docker inspect -f '{{.Name}}' $victimId).TrimStart('/')
-    Write-Host "`n[INYECCIÓN DE FALLA] Deteniendo réplica $victimName con 'docker stop'..." -ForegroundColor Yellow
+    Write-Host "`n[INYECCION DE FALLA] Deteniendo replica $victimName con 'docker stop'..." -ForegroundColor Yellow
 
     $stopJob = Start-Job -ScriptBlock {
         param($cid)
         docker stop $cid | Out-Null
     } -ArgumentList $victimId
 
-    Write-Host "Enviando ráfaga de $BurstCount extracciones reales hacia Traefik..." -ForegroundColor Yellow
+    Write-Host "Enviando rafaga de $BurstCount extracciones reales hacia Traefik..." -ForegroundColor Yellow
     $okCount = 0
     $failCount = 0
 
@@ -111,16 +116,16 @@ try {
     Write-Host "Solicitudes fallidas:          $failCount" -ForegroundColor Red
 
     if ($failCount -eq 0) {
-        Write-Host "`n✔ ÉXITO TOTAL: 100% de peticiones atendidas sin degradación por el clúster." -ForegroundColor Green
+        Write-Host "`nOK: 100% de peticiones atendidas sin degradacion por el cluster." -ForegroundColor Green
     } else {
-        Write-Host "`n✘ HUBO FALLAS ($failCount solicitudes caídas). Verifique middleware de reintentos." -ForegroundColor Red
+        Write-Host "`nHUBO FALLAS ($failCount solicitudes caidas). Verifique middleware de reintentos." -ForegroundColor Red
         exit 1
     }
 
 } finally {
     Write-Host "`n======================================================================" -ForegroundColor Cyan
-    Write-Host "                    RESTAURANDO ESTADO DEL CLÚSTER                    " -ForegroundColor Cyan
+    Write-Host "                    RESTAURANDO ESTADO DEL CLUSTER                    " -ForegroundColor Cyan
     Write-Host "======================================================================" -ForegroundColor Cyan
     docker compose -f docker-compose.integration.yml up -d --no-deps --scale "extractor=$initialCount" extractor 2>$null | Out-Null
-    Write-Host "[OK] Clúster restablecido a $initialCount réplicas saludables." -ForegroundColor Green
+    Write-Host "[OK] Cluster restablecido a $initialCount replicas saludables." -ForegroundColor Green
 }

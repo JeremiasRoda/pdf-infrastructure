@@ -65,7 +65,7 @@ flowchart TD
 | **MongoDB 7** | *No expuesto públicamente* | Puerto interno `27017` | N/A |
 | **Dragonfly** (Caché) | *No expuesto públicamente* | Puerto interno `6379` (alias `redis`) | N/A |
 
-> [!NOTE]
+> [!NOTA]
 > Cualquier subdominio de `*.localhost` resuelve automáticamente a `127.0.0.1` de forma nativa en la mayoría de los sistemas operativos modernos sin necesidad de modificar `/etc/hosts`.
 
 ---
@@ -194,7 +194,18 @@ chmod +x scripts/test-disposability.sh
 .\scripts\test-disposability.ps1 -AllowDestructive
 ```
 
-### 4. Benchmark de Carga Spike con k6 (100 VUs)
+### 4. Validación Mínima de Conectividad Inter-Servicios
+Comprueba la comunicación en red compartida `pdf-network`: resolución DNS interna desde `api`, alcance de readiness, enlace de `documents` a `mongodb:27017` y detección en Traefik vía Consul Catalog:
+```bash
+# Linux / macOS
+chmod +x scripts/test-connectivity.sh
+./scripts/test-connectivity.sh
+
+# Windows PowerShell
+.\scripts\test-connectivity.ps1
+```
+
+### 5. Benchmark de Carga Spike con k6 (100 VUs)
 Ejecuta la prueba de concurrencia oficial sobre el endpoint `/extract`:
 ```bash
 k6 run load-tests/k6-spike.js
