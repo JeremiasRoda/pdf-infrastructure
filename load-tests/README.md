@@ -1,12 +1,10 @@
-# Suite de Pruebas de Carga y Rendimiento
+# Suite de Pruebas de Carga y Rendimiento con k6
 
 **Proyecto:** `pdf-extractext`  
 **Cátedra:** Desarrollo de Software — UTN Facultad Regional San Rafael  
-**Módulo:** `pdf-infrastructure / load-tests` (Issue #5)
+**Módulo:** `pdf-infrastructure / load-tests`
 
-Esta suite implementa los protocolos formales de evaluación de rendimiento y escalabilidad exigidos por la cátedra, permitiendo comparar el comportamiento del sistema con **1 réplica (Baseline)** frente a **5 réplicas (Escalado Horizontal)** bajo dos herramientas complementarias:
-1. **k6 (Spike Test)**: Prueba de concurrencia abrupta con 100 Usuarios Virtuales (VUs).
-2. **Vegeta (Carga Fija Sostenida)**: Inyección constante de 50 peticiones por segundo durante 30 segundos (1.500 solicitudes totales).
+La herramienta oficial y exclusiva adoptada para evaluar el rendimiento, resiliencia y escalabilidad del ecosistema es **k6**.
 
 ---
 
@@ -14,162 +12,89 @@ Esta suite implementa los protocolos formales de evaluación de rendimiento y es
 
 ```
 load-tests/
-├── k6-spike.js             # Script de prueba Spike (100 VUs, 40s total)
-├── run-vegeta.sh           # Script ejecutor de Vegeta para Linux / macOS
-├── run-vegeta.ps1          # Script ejecutor de Vegeta para Windows PowerShell
-├── vegeta-targets.txt      # Definición de objetivos de rotación (autogenerado)
-├── README.md               # Esta guía metodológica y protocolo de cátedra
-└── pdfs/                   # Dataset oficial de 4 PDFs (ignorado en git)
+├── k6-spike.js             # Script de prueba Spike con k6 (100 VUs, 40s)
+├── README.md               # Metodología y protocolo de ejecución
+└── pdfs/                   # Directorio de fixtures PDF
     ├── .gitkeep
-    ├── doc1.pdf
-    ├── doc2.pdf
-    ├── doc3.pdf
-    └── doc4.pdf
+    ├── doc1.pdf            # Fixture auxiliar de desarrollo
+    └── doc279.pdf          # Fixture oficial de 279 páginas (no versionado en git)
 ```
 
 ---
 
-## Requisitos Previos y Herramientas
+## Protocolo de Evaluación Oficial (k6 Spike Test - 100 VUs)
 
-Para ejecutar las pruebas en tu máquina, puedes usar los binarios locales o las imágenes oficiales de Docker:
+El perfil de prueba de k6 simula una avalancha repentina de tráfico (Spike):
+- **0 a 10s:** Subida abrupta de 0 a 100 Usuarios Virtuales (VUs).
+- **10s a 30s:** Meseta sostenida con 100 VUs concurrentes extrayendo texto.
+- **30s a 40s:** Rampa descendente de 100 a 0 VUs para verificar la recuperación de los workers.
 
-- **Docker y Compose**: Motor activo y red `pdf-network` inicializada.
-- **k6**: [Descargar k6](https://k6.io/docs/get-started/installation/) o ejecutar mediante `grafana/k6:latest`.
-- **Vegeta**: [Descargar Vegeta](https://github.com/tsenart/vegeta/releases) o ejecutar mediante `ghcr.io/tsenart/vegeta:latest`.
-
-> [!TIP]
-> Los scripts `run-vegeta.sh` y `run-vegeta.ps1` detectan automáticamente si Vegeta está instalado; si no lo está, **lo ejecutan dentro de un contenedor Docker sin requerir instalación manual**.
+### Manejo Eficiente de Memoria en k6
+El script `k6-spike.js` utiliza el modo binario en el *init context* (`open(FIXTURE_PATH, 'b')`).
+Esto garantiza que el archivo PDF se lea y mantenga en memoria compartida una sola vez para todos los VUs, eliminando accesos repetitivos a disco y evitando duplicaciones innecesarias de memoria.
 
 ---
 
-## Paso 1: Preparación del Dataset de PDFs
+## Requisito del Fixture: PDF Oficial de 279 Páginas
 
-Antes de lanzar los benchmarks, debemos contar con los 4 archivos PDF de prueba en `load-tests/pdfs/`.
+El benchmark oficial para la cátedra exige procesar el documento extenso de **279 páginas** (~17.7 MB, SHA-256 `728c8a52...`):
 
-Ejecuta el script de importación según tu sistema operativo:
+1. **Cómo suministrar el archivo oficial:**
+   Copie el archivo con el nombre `doc279.pdf` dentro de `load-tests/pdfs/doc279.pdf`.
+   
+   O bien, especifique una ruta externa mediante la variable de entorno `PDF_FIXTURE_PATH`:
+   ```bash
+   PDF_FIXTURE_PATH=/ruta/al/documento_279_paginas.pdf k6 run load-tests/k6-spike.js
+   ```
 
-- **En Windows (PowerShell):**
-  ```powershell
-  .\scripts\copy-stress-pdfs.ps1
+2. **Detección y Validación:**
+   `k6-spike.js` verifica la cabecera `%PDF` al inicio. Si el archivo no existe o no es un PDF válido, arrojará un error descriptivo impidiendo reportar benchmarks ficticios. Si no se cuenta con el PDF oficial en local, k6 utilizará el archivo auxiliar `doc1.pdf` indicando explícitamente en el reporte que se trata de un *fallback local de desarrollo*.
+
+---
+
+## Interacción con Rate Limiting en Traefik
+
+Traefik v3.6 incorpora en la frontera el middleware `rate-limit-extract`.
+- Durante operación normal, Traefik protege a los microservicios limitando ráfagas abusivas (`HTTP 429 Too Many Requests`).
+- **Para ejecutar la prueba de carga de capacidad cruda del backend (Spike de 100 VUs):**
+  Es necesario elevar temporalmente los límites en el archivo `.env`:
+  ```env
+  RATE_LIMIT_EXTRACT_AVERAGE=500
+  RATE_LIMIT_EXTRACT_BURST=1000
   ```
-- **En Linux / macOS / Git Bash:**
+  y reiniciar la infraestructura con `docker compose up -d`.
+- El reporte de k6 desglosa de forma independiente:
+  - Respuestas exitosas (`200 OK`)
+  - Respuestas limitadas por Traefik (`429 Too Many Requests`)
+  - Respuestas cortadas por Circuit Breaker (`503 Service Unavailable`)
+
+---
+
+## Ejecución del Benchmark
+
+### 1. Preparar el Escenario Deseado:
+
+- **Escenario Baseline (1 réplica):**
   ```bash
-  chmod +x ./scripts/copy-stress-pdfs.sh
-  ./scripts/copy-stress-pdfs.sh
+  docker compose -f docker-compose.integration.yml up -d --scale extractor=1
   ```
-
-*Si el repositorio monolito `../pdf-extractext/tests/stress/pdfs` existe, copiará los PDFs oficiales. Si aún no está clonado, generará 4 PDFs sintéticos válidos para permitir ejecutar las pruebas de inmediato.*
-
----
-
-## Protocolo de Evaluación: Baseline vs. 5 Réplicas
-
-Para el informe de la cátedra, cada prueba debe ejecutarse en **dos escenarios**:
-
-1. **Escenario A (Baseline):** 1 sola réplica de `extractor`.
-2. **Escenario B (Escalado Horizontal):** 5 réplicas de `extractor` balanceadas por Traefik.
-
-### Preparación del Escenario A (1 Réplica):
-```bash
-docker compose -f docker-compose.integration.yml up -d --build --scale extractor=1
-```
-
-### Preparación del Escenario B (5 Réplicas):
-```bash
-docker compose -f docker-compose.integration.yml up -d --scale extractor=5
-```
-
----
-
-## Monitoreo de Recursos en Tiempo Real
-
-Durante la ejecución de cualquier benchmark, abre una terminal secundaria y ejecuta el monitor en vivo para observar la saturación de CPU y consumo de memoria por réplica:
-
-- **En Windows:**
-  ```powershell
-  .\scripts\monitor-stats.ps1
-  ```
-- **En Linux / macOS:**
+- **Escenario Escalado (5 réplicas):**
   ```bash
-  ./scripts/monitor-stats.sh
+  docker compose -f docker-compose.integration.yml up -d --scale extractor=5
   ```
 
----
+### 2. Ejecutar k6:
 
-## Prueba 1: k6 Spike Test (100 VUs)
-
-### Perfil de Carga:
-- **0 a 10s:** Subida abrupta de 0 a 100 usuarios virtuales (Spike).
-- **10s a 30s:** Meseta sostenida de 100 usuarios virtuales continuos.
-- **30s a 40s:** Rampa descendente de 100 a 0 usuarios (Recuperación).
-- **Target:** `POST http://extractor.universidad.localhost/extract`
-- **Payload:** Rotación cíclica entre `doc1.pdf`, `doc2.pdf`, `doc3.pdf` y `doc4.pdf`.
-- **Validación:** Status `200 OK`, JSON con campos `content` y `page_count`.
-
-### Ejecución:
-
-#### Con binario local de k6:
-```bash
-k6 run load-tests/k6-spike.js
-```
-
-#### Con Docker (si no tienes k6 instalado):
-```bash
-docker run --rm -i \
-  --network=pdf-network \
-  -v "${PWD}/load-tests:/load-tests" \
-  -w /load-tests \
-  -e TARGET_URL="http://extractor:8000/extract" \
-  grafana/k6:latest run k6-spike.js
-```
-
----
-
-## Prueba 2: Vegeta Carga Fija Sostenida (50 req/s)
-
-### Perfil de Carga:
-- **Tasa:** 50 peticiones/segundo constantes.
-- **Duración:** 30 segundos (Total exacto: 1.500 solicitudes).
-- **Timeout del cliente:** 30 segundos.
-- **Target:** Rotación de los 4 PDFs oficiales hacia `POST http://extractor.universidad.localhost/extract`.
-
-### Ejecución:
-
-- **En Windows (PowerShell):**
-  ```powershell
-  .\load-tests\run-vegeta.ps1
-  ```
-- **En Linux / macOS:**
+- **Con k6 instalado localmente:**
   ```bash
-  chmod +x ./load-tests/run-vegeta.sh
-  ./load-tests/run-vegeta.sh
+  k6 run load-tests/k6-spike.js
   ```
 
-El resultado se mostrará en pantalla y se guardará automáticamente en `load-tests/report.txt`.
-
----
-
-## Plantilla de Tabla Comparativa para el Informe Final
-
-Completa esta tabla comparativa con los resultados obtenidos en tus corridas para presentar ante la cátedra:
-
-| Métrica de Evaluación | 1 Réplica (Baseline) | 5 Réplicas (Escalado) | Factor de Mejora / Variación |
-| :--- | :--- | :--- | :--- |
-| **Herramienta k6 — Throughput (req/s)** | *ej. 12.4 req/s* | *ej. 48.7 req/s* | *+292% (3.9x)* |
-| **Herramienta k6 — Latencia Mediana p(50)** | *ej. 1.850 ms* | *ej. 320 ms* | *-82% de latencia* |
-| **Herramienta k6 — Latencia Percentil 95** | *ej. 4.200 ms* | *ej. 890 ms* | *-78% de latencia* |
-| **Herramienta k6 — Tasa de Errores (%)** | *ej. 4.8%* | *0.0%* | *Tolerancia total* |
-| **Vegeta — Solicitudes Exitosas / 1500** | *ej. 1.150 / 1.500* | *1.500 / 1.500* | *100% de éxito* |
-| **Vegeta — Throughput Efectivo (req/s)** | *ej. 38.3 req/s* | *50.0 req/s* | *100% de la tasa solicitada* |
-| **Vegeta — Latencia p(99)** | *ej. 6.800 ms* | *ej. 1.100 ms* | *-83%* |
-| **Consumo Máximo de CPU por Contenedor** | *100% (1 CPU)* | *~85% en cada una* | *Carga balanceada* |
-| **Consumo de Memoria RAM por Contenedor** | *~280 MB* | *~250 MB por réplica* | *Estable dentro del límite* |
-
----
-
-## Regla de Oro sobre Redis y Pruebas Baseline
-
-> [!WARNING]
-> Según las reglas de la cátedra UTN FRSR:
-> - Durante la obtención de las métricas **Baseline** con k6 y Vegeta, el servicio **Redis DEBE permanecer inactivo**.
-> - La activación de Redis (`docker compose --profile cache up -d redis`) corresponde a la fase posterior de **Optimización con Caché**, donde se repetirán estas mismas pruebas para documentar la ganancia de rendimiento por retención de respuestas previas.
+- **Vía Docker (sin instalar k6 en el host):**
+  ```bash
+  docker run --rm -i \
+    --network pdf-network \
+    -v "${PWD}/load-tests:/load-tests" \
+    -e TARGET_URL="http://extractor:8000/extract" \
+    grafana/k6:latest run /load-tests/k6-spike.js
+  ```

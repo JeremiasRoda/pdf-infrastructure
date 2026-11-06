@@ -1,4 +1,14 @@
+# ==============================================================================
+# Docker Compose - Infraestructura Base Compartida
+# Cátedra: Desarrollo de Software - UTN FR San Rafael
+# ==============================================================================
+
 services:
+  # ----------------------------------------------------------------------------
+  # Traefik v3.6 - Reverse Proxy, Ingress, Balanceador de Carga y Resiliencia
+  # Factor IX: init: true, stop_grace_period y ciclo de vida de drenado
+  # Seguridad: Dashboard administrativo restringido a 127.0.0.1 (localhost)
+  # ----------------------------------------------------------------------------
   traefik:
     image: traefik:v3.6
     restart: unless-stopped
@@ -6,8 +16,12 @@ services:
     stop_grace_period: 30s
     ports:
       - "${TRAEFIK_HTTP_PORT:-80}:80"
-      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+      # Seguridad: Solo expuesto en loopback local para evitar acceso no autenticado desde la red
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
     volumes:
+      # Montaje del socket de Docker en modo solo lectura (:ro) para descubrimiento dinámico
+      # ADVERTENCIA DE SEGURIDAD: El socket de Docker otorga visibilidad del daemon local.
+      # Se restringe a :ro y Traefik corre con exposedByDefault: false.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
     networks:
@@ -18,24 +32,27 @@ services:
       - "traefik.http.routers.traefik-dashboard.rule=Host(`${TRAEFIK_DASHBOARD_DOMAIN:-traefik.universidad.localhost}`)"
       - "traefik.http.routers.traefik-dashboard.entrypoints=web"
       - "traefik.http.routers.traefik-dashboard.service=api@internal"
-      # Servicio interno expuesto
       - "traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080"
 
   # ----------------------------------------------------------------------------
-  # Redis Cache - Perfil condicional 'cache' (Post-Baseline)
-  # Solo se levanta explícitamente con: docker compose --profile cache up -d
-  # Durante la prueba de carga baseline con k6 / Vegeta NO debe ejecutarse.
+  # Dragonfly Cache (Reemplazo multi-threaded de Redis de alto rendimiento)
+  # Perfil condicional 'cache' (Post-Baseline)
+  # Compatible con protocolo Redis en puerto 6379 (alias de red 'redis')
+  # Durante la prueba de carga baseline con k6 NO debe ejecutarse.
+  # Para levantarlo: docker compose --profile cache up -d dragonfly
   # ----------------------------------------------------------------------------
-  redis:
-    image: redis:7-alpine
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.26.0
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
     profiles:
       - cache
     networks:
-      - pdf-network
-    command: redis-server --appendonly yes
+      pdf-network:
+        aliases:
+          - redis
+    command: ["--logtostderr"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

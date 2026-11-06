@@ -1,165 +1,207 @@
 <#
-.SYNOPSIS
-    Script de Demostración del Factor IX (Desechabilidad - Twelve-Factor App).
-    Cátedra: Desarrollo de Software - UTN FR San Rafael (Issue #8).
-.DESCRIPTION
-    Evalúa:
-    1. Arranque Rápido (Fast Startup): Tiempo desde creación hasta estado saludable (< 5s).
-    2. Apagado Elegante (Graceful Shutdown): Drenado de peticiones y salida limpia (Exit 0, no 137).
-    3. Resiliencia ante Caída Súbita (Crash Resilience): Tolerancia a SIGKILL sin corrupción.
+==============================================================================
+Demostración y Validación del Factor IX (Desechabilidad - Twelve-Factor App)
+Cátedra: Desarrollo de Software - UTN FR San Rafael
+==============================================================================
+Aspectos auditados:
+1. Inicio Rápido: < 5s medido en la instancia específica creada.
+2. Apagado Elegante: Drenado de extracción real de PDF en vuelo ante SIGTERM y
+   código de salida limpio (ExitCode = 0).
+3. Muerte Súbita: SIGKILL (código 137 esperado) y recuperación sin caída.
+   Requiere -AllowDestructive.
+==============================================================================
 #>
 
 [CmdletBinding()]
-param (
-    [string]$TargetHost = "extractor.universidad.localhost",
-    [string]$HealthUrl = "http://127.0.0.1:80/health",
-    [string]$PingUrl = "http://127.0.0.1:8080/ping"
+param(
+    [switch]$AllowDestructive = $false
 )
 
 $ErrorActionPreference = "Stop"
+$TargetHost = "extractor.universidad.localhost"
+$TraefikUrl = "http://127.0.0.1:80"
+$TestPdf = "load-tests/pdfs/doc1.pdf"
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "   UTN FRSR - EVALUACIÓN FACTOR IX: DESECHABILIDAD (TWELVE-FACTOR)    " -ForegroundColor Cyan
+Write-Host "   UTN FRSR - VALIDACIÓN RIGUROSA FACTOR IX: DESECHABILIDAD (POWERSHELL)" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
-# 1. Verificar Traefik
+# 1. Comprobar Traefik
 try {
-    $ping = Invoke-RestMethod -Uri $PingUrl -TimeoutSec 3 -ErrorAction Stop
-    if ($ping -ne "OK") { throw }
-}
-catch {
-    Write-Host "[ERROR] Traefik no está respondiendo en el puerto 8080. Ejecute 'docker compose up -d'." -ForegroundColor Red
+    $ping = Invoke-WebRequest -Uri "http://127.0.0.1:8080/ping" -UseBasicParsing -TimeoutSec 3
+} catch {
+    Write-Host "[ERROR] Traefik no está respondiendo en 127.0.0.1:8080. Inicie con 'docker compose up -d'." -ForegroundColor Red
     exit 1
 }
 
-# 2. Detectar réplicas del extractor
-$rawContainers = docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"
-$containers = @($rawContainers -split "`r?`n" | Where-Object { $_ -ne "" })
-
-if ($containers.Count -lt 2) {
-    Write-Host "[AVISO] Se requieren al menos 2 réplicas para probar drenado sin corte." -ForegroundColor Yellow
-    Write-Host "Escalando a 3 réplicas..." -ForegroundColor Cyan
-    docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor | Out-Null
-    Start-Sleep -Seconds 3
-    $rawContainers = docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"
-    $containers = @($rawContainers -split "`r?`n" | Where-Object { $_ -ne "" })
+# 2. Asegurar fixture PDF
+if (-not (Test-Path $TestPdf)) {
+    $parent = Split-Path -Parent $TestPdf
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $pdfMinimal = @"
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+endobj
+xref
+0 4
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+trailer
+<< /Size 4 /Root 1 0 R >>
+startxref
+190
+%%EOF
+"@
+    [System.IO.File]::WriteAllText($TestPdf, $pdfMinimal)
 }
 
-Write-Host "Instancias activas de extractor detectadas: $($containers.Count)" -ForegroundColor Green
-
-# ------------------------------------------------------------------------------
-# TEST 1: Arranque Rápido (Fast Startup)
-# ------------------------------------------------------------------------------
-Write-Host "`n[TEST 1] Evaluando Arranque Rápido (Fast Startup)..." -ForegroundColor Yellow
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$newTargetCount = $containers.Count + 1
-
-docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=$newTargetCount extractor | Out-Null
-
-$isHealthy = $false
-for ($i = 1; $i -le 20; $i++) {
-    try {
-        $res = Invoke-WebRequest -Uri $HealthUrl -Headers @{ Host = $TargetHost } -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        if ($res.StatusCode -eq 200) {
-            $isHealthy = $true
-            break
-        }
-    }
-    catch {
-        Start-Sleep -Milliseconds 250
-    }
-}
-$sw.Stop()
-$elapsedSec = [Math]::Round($sw.Elapsed.TotalSeconds, 2)
-
-Write-Host "Tiempo de arranque y disponibilidad: $elapsedSec s" -ForegroundColor Green
-if ($elapsedSec -lt 5.0) {
-    Write-Host "✔ Cumple Criterio: Arranque rápido inferior a 5 segundos." -ForegroundColor Green
-}
-else {
-    Write-Host "⚠ Arranque superior a 5s pero dentro de límites tolerables." -ForegroundColor Yellow
-}
-
-# ------------------------------------------------------------------------------
-# TEST 2: Apagado Elegante y Drenado (Graceful Shutdown)
-# ------------------------------------------------------------------------------
-$targetCid = $containers[0]
-$targetName = (docker inspect -f '{{.Name}}' $targetCid).TrimStart('/')
-
-Write-Host "`n[TEST 2] Evaluando Apagado Elegante (Graceful Shutdown) en $targetName..." -ForegroundColor Yellow
-Write-Host "Enviando SIGTERM con 'docker stop' y midiendo tiempo de drenado..." -ForegroundColor Cyan
-
-$stopJob = Start-Job -ScriptBlock { param($cid) docker stop $cid } -ArgumentList $targetCid
-
-$okCount = 0
-$failCount = 0
-
-while ($stopJob.State -eq 'Running') {
-    try {
-        $res = Invoke-WebRequest -Uri $HealthUrl -Headers @{ Host = $TargetHost } -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-        if ($res.StatusCode -eq 200) {
-            $okCount++
-            Write-Host "." -ForegroundColor Green -NoNewline
-        } else {
-            $failCount++
-            Write-Host "X" -ForegroundColor Red -NoNewline
-        }
-    }
-    catch {
-        $failCount++
-        Write-Host "X" -ForegroundColor Red -NoNewline
-    }
-    Start-Sleep -Milliseconds 100
-}
-Write-Host ""
-Receive-Job $stopJob | Out-Null
-Remove-Job $stopJob
-
-$exitCode = (docker inspect -f '{{.State.ExitCode}}' $targetCid).Trim()
-Write-Host "Código de salida del proceso al recibir SIGTERM: ExitCode=$exitCode" -ForegroundColor Cyan
-
-if ($exitCode -eq "0") {
-    Write-Host "✔ ÉXITO TOTAL: El contenedor interceptó SIGTERM y finalizó limpiamente (ExitCode=0)." -ForegroundColor Green
-}
-elseif ($exitCode -eq "137") {
-    Write-Host "✘ FALLO: El contenedor fue forzado a morir por SIGKILL (ExitCode=137). Revise stop_grace_period o exec." -ForegroundColor Red
-}
-else {
-    Write-Host "ℹ Finalizó con código $exitCode." -ForegroundColor Yellow
-}
-
-if ($failCount -eq 0) {
-    Write-Host "✔ Cero Downtime: 100% de peticiones exitosas durante el apagado ($okCount exitosas)." -ForegroundColor Green
-}
-else {
-    Write-Host "✘ Hubo $failCount peticiones caídas durante el apagado." -ForegroundColor Red
-}
-
-# ------------------------------------------------------------------------------
-# TEST 3: Resiliencia ante Caída Súbita (Crash Resilience)
-# ------------------------------------------------------------------------------
-$rawRemaining = docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"
-$remainingList = @($rawRemaining -split "`r?`n" | Where-Object { $_ -ne "" })
-$victimCid = $remainingList[0]
-
-Write-Host "`n[TEST 3] Evaluando Resiliencia ante Caída Súbita (SIGKILL / Muerte de Hardware)..." -ForegroundColor Yellow
-Write-Host "Matando contenedor réplica con 'docker kill'..." -ForegroundColor Cyan
-docker kill $victimCid | Out-Null
+# Obtener réplicas iniciales para restaurar al finalizar
+$initialContainers = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
+$initialCount = $initialContainers.Count
+if ($initialCount -lt 2) { $initialCount = 2 }
 
 try {
-    $res = Invoke-WebRequest -Uri $HealthUrl -Headers @{ Host = $TargetHost } -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
-    if ($res.StatusCode -eq 200) {
-        Write-Host "✔ Sistema Resiliente: Traefik descartó la réplica muerta y respondió 200 OK con el clúster." -ForegroundColor Green
+    if ($initialContainers.Count -lt 2) {
+        Write-Host "Escalando a 2 réplicas base para pruebas..." -ForegroundColor Yellow
+        docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=2 extractor | Out-Null
+        Start-Sleep -Seconds 3
+        $initialContainers = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
     }
-}
-catch {
-    Write-Host "✘ Error al resolver tras muerte súbita." -ForegroundColor Red
-}
 
-# Restaurar estado
-Write-Host "`n======================================================================" -ForegroundColor Cyan
-Write-Host "                    RESTAURANDO ESTADO DEL CLÚSTER                    " -ForegroundColor Cyan
-Write-Host "======================================================================" -ForegroundColor Cyan
-docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor | Out-Null
-Write-Host "[OK] Clúster restablecido a 3 réplicas saludables." -ForegroundColor Green
-Write-Host "======================================================================`n" -ForegroundColor Cyan
+    # --------------------------------------------------------------------------
+    # TEST 1: Inicio Rápido (< 5s en la instancia específica creada)
+    # --------------------------------------------------------------------------
+    Write-Host "`n[TEST 1] Evaluando Arranque Rápido sobre una NUEVA réplica específica..." -ForegroundColor Yellow
+    $beforeIds = @($initialContainers)
+    $targetScale = $beforeIds.Count + 1
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    docker compose -f docker-compose.integration.yml up -d --no-deps --scale "extractor=$targetScale" extractor | Out-Null
+
+    $afterIds = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
+    $newId = ($afterIds | Where-Object { $_ -notin $beforeIds }) | Select-Object -First 1
+
+    if (-not $newId) {
+        Write-Host "[ERROR] No se pudo identificar la nueva instancia creada." -ForegroundColor Red
+        exit 1
+    }
+
+    $newName = (docker inspect -f '{{.Name}}' $newId).TrimStart('/')
+    Write-Host "Nueva instancia aislada detectada: $newName ($($newId.Substring(0,12)))" -ForegroundColor Cyan
+
+    $startupHealthy = $false
+    $elapsedSec = 0
+    for ($i = 0; $i -lt 25; $i++) {
+        $health = docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' $newId 2>$null
+        if ($health -eq "healthy") {
+            $sw.Stop()
+            $elapsedSec = [math]::Round($sw.Elapsed.TotalSeconds, 2)
+            $startupHealthy = $true
+            break
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    if ($startupHealthy -and ($elapsedSec -le 5.0)) {
+        Write-Host "✔ ÉXITO: Contenedor $newName saludable en ${elapsedSec}s (< 5.0s límite de cátedra)." -ForegroundColor Green
+    } elseif ($startupHealthy) {
+        Write-Host "⚠ AVISO: El contenedor tardó ${elapsedSec}s (> 5.0s)." -ForegroundColor Yellow
+    } else {
+        Write-Host "✘ FALLO: El contenedor no alcanzó estado healthy en el tiempo esperado." -ForegroundColor Red
+        exit 1
+    }
+
+    # --------------------------------------------------------------------------
+    # TEST 2: Apagado Elegante (Graceful Shutdown) y Drenado de Extracción Real
+    # --------------------------------------------------------------------------
+    Write-Host "`n[TEST 2] Evaluando Apagado Elegante (SIGTERM) y Drenado de Extracción Real en $newName..." -ForegroundColor Yellow
+    
+    # Lanzar extracción real en segundo plano apuntando a Traefik
+    $extractJob = Start-Job -ScriptBlock {
+        param($pdfPath, $traefikUrl, $targetHost)
+        $resp = curl.exe -s -w "`n%{http_code}" -X POST "$traefikUrl/extract" `
+            -H "Host: $targetHost" `
+            -H "Content-Type: application/pdf" `
+            -H "X-Filename: disposability_test.pdf" `
+            --data-binary "@$pdfPath"
+        return $resp
+    } -ArgumentList (Resolve-Path $TestPdf).Path, $TraefikUrl, $TargetHost
+
+    Start-Sleep -Milliseconds 80
+
+    $stopSw = [System.Diagnostics.Stopwatch]::StartNew()
+    docker stop $newId | Out-Null
+    $stopSw.Stop()
+
+    $jobResult = Receive-Job -Job $extractJob -Wait
+    Remove-Job -Job $extractJob -Force | Out-Null
+
+    $lines = $jobResult -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
+    $httpCode = $lines[-1].Trim()
+    $body = ($lines[0..($lines.Count - 2)]) -join ""
+
+    $exitCode = (docker inspect -f '{{.State.ExitCode}}' $newId).Trim()
+    Write-Host "Código de salida del proceso tras SIGTERM: ExitCode=$exitCode (Duración: $([math]::Round($stopSw.Elapsed.TotalSeconds, 2))s)" -ForegroundColor Cyan
+
+    if ($exitCode -ne "0") {
+        Write-Host "✘ FALLO: El proceso no finalizó con ExitCode=0 (obtenido ExitCode=$exitCode)." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "✔ Apagado Elegante Verificado: ExitCode = 0 (Captura limpia de SIGTERM)." -ForegroundColor Green
+
+    if ($httpCode -eq "200" -and $body -match '"content"') {
+        Write-Host "✔ Drenado Exitoso: La extracción real en vuelo finalizó con HTTP 200 OK y JSON íntegro." -ForegroundColor Green
+    } else {
+        Write-Host "✘ FALLO: La extracción en vuelo se abortó o devolvió error (HTTP $httpCode)." -ForegroundColor Red
+        exit 1
+    }
+
+    # --------------------------------------------------------------------------
+    # TEST 3: Muerte Súbita (Crash Resilience con SIGKILL intencional)
+    # --------------------------------------------------------------------------
+    Write-Host "`n[TEST 3] Evaluando Tolerancia a Caída Súbita (SIGKILL / Muerte Catastrófica)..." -ForegroundColor Yellow
+    if (-not $AllowDestructive) {
+        Write-Host "ℹ Test 3 omitido por seguridad. Para habilitarlo ejecute:" -ForegroundColor Yellow
+        Write-Host "  .\scripts\test-disposability.ps1 -AllowDestructive" -ForegroundColor Cyan
+    } else {
+        $remainingId = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Select-Object -First 1
+        $victimName = (docker inspect -f '{{.Name}}' $remainingId).TrimStart('/')
+        Write-Host "Inyectando fallo abrupto intencional (SIGKILL) a $victimName..."
+        docker kill -s KILL $remainingId | Out-Null
+
+        $killExit = (docker inspect -f '{{.State.ExitCode}}' $remainingId).Trim()
+        Write-Host "Código de salida esperado por SIGKILL: ExitCode=$killExit" -ForegroundColor Cyan
+        if ($killExit -eq "137") {
+            Write-Host "✔ Confirmado: Finalización inmediata forzada por SIGKILL (código 137 esperado)." -ForegroundColor Green
+        }
+
+        $survivorCode = curl.exe -s -o /dev/null -w "%{http_code}" -H "Host: $TargetHost" "$TraefikUrl/health"
+        if ($survivorCode -eq "200") {
+            Write-Host "✔ Alta Disponibilidad: Clúster respondió HTTP 200 OK inmediatamente a través de sobrevivientes." -ForegroundColor Green
+        } else {
+            Write-Host "✘ FALLO: Tráfico interrumpido tras caída súbita (HTTP $survivorCode)." -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    Write-Host "`n======================================================================" -ForegroundColor Green
+    Write-Host "  ✔ FACTOR IX (DESECHABILIDAD) VALIDADO RIGUROSAMENTE CON ÉXITO" -ForegroundColor Green
+    Write-Host "======================================================================" -ForegroundColor Green
+
+} finally {
+    Write-Host "`n======================================================================" -ForegroundColor Cyan
+    Write-Host "             RESTAURACIÓN Y LIMPIEZA DE CONTENEDORES                  " -ForegroundColor Cyan
+    Write-Host "======================================================================" -ForegroundColor Cyan
+    Write-Host "Restableciendo el clúster a $initialCount réplicas..."
+    docker compose -f docker-compose.integration.yml up -d --no-deps --scale "extractor=$initialCount" extractor 2>$null | Out-Null
+    Write-Host "[OK] Estado original del clúster restaurado." -ForegroundColor Green
+}

@@ -7,12 +7,11 @@
 #   ../pdf-api-service
 # ==============================================================================
 
-version: '3.8'
-
 services:
   # ----------------------------------------------------------------------------
   # Microservicio Extractor (Stateless y Escalable Horizontalmente)
   # Factor IX: init: true para propagar SIGTERM y stop_grace_period para drenado
+  # Patrones: Rate Limiting, Circuit Breaker y Retry configurados en Traefik
   # ----------------------------------------------------------------------------
   extractor:
     build:
@@ -27,10 +26,10 @@ services:
     environment:
       - PORT=8000
       - PYTHONUNBUFFERED=1
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - CACHE_ENABLED=${CACHE_ENABLED:-false}
       - METRICS_ENABLED=true
-      - MAX_UPLOAD_MB=25
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-25}
     deploy:
       resources:
         limits:
@@ -44,13 +43,44 @@ services:
       start_period: 5s
     labels:
       - "traefik.enable=true"
-      # Middleware de reintentos: ante apagado de réplicas, reenvía peticiones a instancias vivas
-      - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=3"
+
+      # ------------------------------------------------------------------------
+      # Definición de Middlewares de Resiliencia en Traefik v3.6
+      # Orden de Ejecución: RateLimit -> CircuitBreaker -> Retry -> Backend
+      # ------------------------------------------------------------------------
+      # 1. Rate Limiting: Protege de tráfico excesivo en frontera (HTTP 429)
+      - "traefik.http.middlewares.rate-limit-extract.ratelimit.average=${RATE_LIMIT_EXTRACT_AVERAGE:-10}"
+      - "traefik.http.middlewares.rate-limit-extract.ratelimit.burst=${RATE_LIMIT_EXTRACT_BURST:-20}"
+      - "traefik.http.middlewares.rate-limit-extract.ratelimit.period=1s"
+      - "traefik.http.middlewares.rate-limit-extract.ratelimit.sourcecriterion.ipstrategy.depth=0"
+
+      # 2. Circuit Breaker: Abre el circuito ante fallos persistentes de red o 5xx (HTTP 503)
+      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.expression=${CIRCUIT_BREAKER_EXPRESSION:-NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25}"
+      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.checkperiod=5s"
+      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.fallbackduration=10s"
+      - "traefik.http.middlewares.circuit-breaker-extractor.circuitbreaker.recoveryduration=5s"
+
+      # 3. Retry: Reintenta fallos transitorios de red/conexión ante apagado de réplicas
+      - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=${RETRY_ATTEMPTS:-3}"
       - "traefik.http.middlewares.retry-on-shutdown.retry.initialinterval=100ms"
+
+      # ------------------------------------------------------------------------
+      # Routers Traefik
+      # ------------------------------------------------------------------------
+      # Router A (Salud / Readiness - Prioridad Alta, SIN RateLimit para evitar bloqueos)
+      - "traefik.http.routers.extractor-health.rule=Host(`extractor.universidad.localhost`) && (Path(`/health`) || PathPrefix(`/health/`))"
+      - "traefik.http.routers.extractor-health.priority=100"
+      - "traefik.http.routers.extractor-health.entrypoints=web"
+      - "traefik.http.routers.extractor-health.service=extractor"
+
+      # Router B (Tráfico General de Negocio /extract - Prioridad Normal con Patrones)
       - "traefik.http.routers.extractor.rule=Host(`extractor.universidad.localhost`)"
+      - "traefik.http.routers.extractor.priority=10"
       - "traefik.http.routers.extractor.entrypoints=web"
-      - "traefik.http.routers.extractor.middlewares=retry-on-shutdown"
+      - "traefik.http.routers.extractor.middlewares=rate-limit-extract,circuit-breaker-extractor,retry-on-shutdown"
       - "traefik.http.routers.extractor.service=extractor"
+
+      # Servicio Balanceador y Health Check de Traefik
       - "traefik.http.services.extractor.loadbalancer.server.port=8000"
       - "traefik.http.services.extractor.loadbalancer.healthcheck.path=/health"
       - "traefik.http.services.extractor.loadbalancer.healthcheck.interval=2s"
@@ -113,10 +143,20 @@ services:
       start_period: 5s
     labels:
       - "traefik.enable=true"
+      # Router A (Salud / Readiness - Prioridad Alta)
+      - "traefik.http.routers.documents-health.rule=Host(`documents.universidad.localhost`) && (Path(`/health`) || PathPrefix(`/health/`))"
+      - "traefik.http.routers.documents-health.priority=100"
+      - "traefik.http.routers.documents-health.entrypoints=web"
+      - "traefik.http.routers.documents-health.service=documents"
+
+      # Router B (CRUD Documentos - Prioridad Normal)
       - "traefik.http.routers.documents.rule=Host(`documents.universidad.localhost`)"
+      - "traefik.http.routers.documents.priority=10"
       - "traefik.http.routers.documents.entrypoints=web"
       - "traefik.http.routers.documents.middlewares=retry-on-shutdown"
       - "traefik.http.routers.documents.service=documents"
+
+      # Servicio Balanceador y Health Check de Traefik
       - "traefik.http.services.documents.loadbalancer.server.port=8000"
       - "traefik.http.services.documents.loadbalancer.healthcheck.path=/health"
       - "traefik.http.services.documents.loadbalancer.healthcheck.interval=2s"
@@ -138,11 +178,11 @@ services:
       - PORT=8000
       - EXTRACTOR_URL=http://extractor:8000
       - DOCUMENT_SERVICE_URL=http://documents:8000
-      - REDIS_URL=redis://redis:6379/0
-      - MAX_UPLOAD_BYTES=25000000
-      - EXTRACTOR_TIMEOUT_SECONDS=30
-      - DOCUMENT_TIMEOUT_SECONDS=5
-      - READY_CHECK_TIMEOUT_SECONDS=2
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-25000000}
+      - EXTRACTOR_TIMEOUT_SECONDS=${EXTRACTOR_TIMEOUT_SECONDS:-30}
+      - DOCUMENT_TIMEOUT_SECONDS=${DOCUMENT_TIMEOUT_SECONDS:-5}
+      - READY_CHECK_TIMEOUT_SECONDS=${READY_CHECK_TIMEOUT_SECONDS:-2}
     depends_on:
       extractor:
         condition: service_healthy
@@ -161,29 +201,53 @@ services:
       start_period: 5s
     labels:
       - "traefik.enable=true"
+      # Middlewares para la API
+      - "traefik.http.middlewares.rate-limit-api.ratelimit.average=${RATE_LIMIT_API_AVERAGE:-20}"
+      - "traefik.http.middlewares.rate-limit-api.ratelimit.burst=${RATE_LIMIT_API_BURST:-40}"
+      - "traefik.http.middlewares.rate-limit-api.ratelimit.period=1s"
+      - "traefik.http.middlewares.rate-limit-api.ratelimit.sourcecriterion.ipstrategy.depth=0"
+
+      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.expression=${CIRCUIT_BREAKER_EXPRESSION:-NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25}"
+      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.checkperiod=5s"
+      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.fallbackduration=10s"
+      - "traefik.http.middlewares.circuit-breaker-api.circuitbreaker.recoveryduration=5s"
+
+      # Router A (Salud / Readiness - Prioridad Alta, SIN RateLimit)
+      - "traefik.http.routers.api-health.rule=Host(`api.universidad.localhost`) && (Path(`/health`) || Path(`/ready`))"
+      - "traefik.http.routers.api-health.priority=100"
+      - "traefik.http.routers.api-health.entrypoints=web"
+      - "traefik.http.routers.api-health.service=api"
+
+      # Router B (Procesamiento /process - Prioridad Normal con Patrones)
       - "traefik.http.routers.api.rule=Host(`api.universidad.localhost`)"
+      - "traefik.http.routers.api.priority=10"
       - "traefik.http.routers.api.entrypoints=web"
-      - "traefik.http.routers.api.middlewares=retry-on-shutdown"
+      - "traefik.http.routers.api.middlewares=rate-limit-api,circuit-breaker-api,retry-on-shutdown"
       - "traefik.http.routers.api.service=api"
+
+      # Servicio Balanceador y Health Check de Traefik
       - "traefik.http.services.api.loadbalancer.server.port=8000"
       - "traefik.http.services.api.loadbalancer.healthcheck.path=/health"
       - "traefik.http.services.api.loadbalancer.healthcheck.interval=2s"
       - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
 
   # ----------------------------------------------------------------------------
-  # Redis Cache (Perfil 'cache' para optimización POST-BASELINE)
+  # Dragonfly Cache (Perfil 'cache' para optimización POST-BASELINE)
+  # Drop-in replacement de Redis de alto rendimiento, multi-threaded
   # Solo se levanta explícitamente con '--profile cache'
   # ----------------------------------------------------------------------------
-  redis:
-    image: redis:7-alpine
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.26.0
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
     profiles:
       - cache
     networks:
-      - pdf-network
-    command: redis-server --appendonly yes
+      pdf-network:
+        aliases:
+          - redis
+    command: ["--logtostderr"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

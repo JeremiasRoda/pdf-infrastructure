@@ -1,0 +1,43 @@
+name: Validación y CI de Infraestructura
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    name: Lint y Validación de Sintaxis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del Repositorio
+        uses: actions/checkout@v4
+
+      - name: Comprobar existencia de variables de entorno de plantilla
+        run: |
+          test -f .env.example
+          cp .env.example .env
+
+      - name: Validar Sintaxis de Scripts Bash
+        run: |
+          bash -n init-network.sh
+          for script in scripts/*.sh; do
+            echo "Verificando sintaxis de $script..."
+            bash -n "$script"
+          done
+
+      - name: Validar Sintaxis de Docker Compose Base
+        run: |
+          docker compose config --quiet
+
+      - name: Validar Sintaxis de Docker Compose Integration
+        run: |
+          # Simular contexto de carpetas hermanas para build context en CI
+          mkdir -p ../pdf-extractor-service ../pdf-document-service ../pdf-api-service
+          touch ../pdf-extractor-service/Dockerfile ../pdf-document-service/Dockerfile ../pdf-api-service/Dockerfile
+          docker compose -f docker-compose.integration.yml config --quiet
+
+      - name: Validar Formato YAML de Traefik
+        run: |
+          python3 -c "import yaml; yaml.safe_load(open('traefik/traefik.yml'))"

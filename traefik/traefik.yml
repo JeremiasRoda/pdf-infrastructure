@@ -1,6 +1,6 @@
 # ==============================================================================
-# Traefik v3 - Configuración Estática
-# Infraestructura de Microservicios PDF
+# Traefik v3.6 - Configuración Estática
+# Infraestructura de Microservicios PDF - UTN FRSR
 # ==============================================================================
 
 # EntryPoints (Puntos de entrada de red)
@@ -11,11 +11,15 @@ entryPoints:
     address: ":8080"
 
 # API y Dashboard de auditoría y monitoreo
+# NOTA DE SEGURIDAD:
+# En desarrollo local se utiliza insecure: true para acceso directo a métricas.
+# El puerto 8080 está expresamente vinculado a 127.0.0.1 en docker-compose.yml
+# para impedir cualquier acceso no autorizado desde interfaces públicas o red externa.
 api:
   dashboard: true
   insecure: true
 
-# Endpoint de salud de Traefik (/ping)
+# Endpoint de salud de Traefik (/ping) para probes de disponibilidad
 ping: {}
 
 # Ciclo de Vida y Desechabilidad (Factor IX - Twelve-Factor App)
@@ -35,6 +39,7 @@ accessLog:
 # Proveedores de configuración dinámica
 providers:
   docker:
+    # Montaje solo lectura (:ro) en docker-compose.yml. Traefik solo lee eventos de contenedores.
     endpoint: "unix:///var/run/docker.sock"
     exposedByDefault: false
     network: "pdf-network"

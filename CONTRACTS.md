@@ -1,9 +1,9 @@
-# Contrato de Infraestructura y Enrutamiento (`CONTRACTS.md`)
+# Contrato de Infraestructura, Redes y Resiliencia (`CONTRACTS.md`)
 **Proyecto:** `pdf-extractext`  
 **Cátedra:** Desarrollo de Software — UTN Facultad Regional San Rafael  
 **Repositorio Central:** `pdf-infrastructure`  
 
-Este documento define el **contrato oficial de infraestructura, redes y enrutamiento** para todos los microservicios del ecosistema. Todos los integrantes del equipo deben adherirse estrictamente a estas especificaciones en sus respectivos repositorios (`pdf-extractor-service`, `pdf-document-service` y `pdf-api-service`).
+Este documento define el **contrato oficial de infraestructura, redes, patrones de resiliencia y ciclo de vida** para todos los microservicios del ecosistema. Todos los integrantes del equipo deben adherirse estrictamente a estas especificaciones en sus respectivos repositorios (`pdf-extractor-service`, `pdf-document-service` y `pdf-api-service`).
 
 ---
 
@@ -12,39 +12,43 @@ Este documento define el **contrato oficial de infraestructura, redes y enrutami
 Todos los contenedores se integran a través de una red puente externa compartida de Docker denominada **`pdf-network`**.
 
 ```
-                           [ Cliente / Navegador / k6 / Vegeta ]
-                                            │
-                                            ▼
-                          ┌───────────────────────────────────┐
-                          │   Traefik v3 (Reverse Proxy & LB) │
-                          │       Puerto 80 / 8080 (Admin)    │
-                          └─────────────────┬─────────────────┘
-                                            │ red: 'pdf-network'
-       ┌────────────────────────────────────┼────────────────────────────────────┐
-       ▼                                    ▼                                    ▼
-┌──────────────┐                 ┌────────────────────┐               ┌────────────────────┐
-│  extractor   │                 │     documents      │               │        api         │
-│ (Escalable)  │                 │  (Dueño de MongoDB)│               │   (Orquestador)    │
-│  Puerto 8000 │                 │    Puerto 8000     │               │    Puerto 8000     │
-└──────────────┘                 └──────────┬─────────┘               └──────────┬─────────┘
-                                            │                                    │
-                                            ▼                                    ▼
-                                   ┌─────────────────┐                  ┌─────────────────┐
-                                   │  mongodb:27017  │                  │  redis:6379     │
-                                   │ (Almacenamiento)│                  │(Caché Post-Base)│
-                                   └─────────────────┘                  └─────────────────┘
+                                  [ Clientes Externos / Benchmark k6 ]
+                                                   │
+                                                   ▼ (HTTP :80)
+                                 ┌───────────────────────────────────┐
+                                 │   Traefik v3.6 (Ingress Gateway)  │
+                                 │   - Rate Limiting (HTTP 429)      │
+                                 │   - Circuit Breaker (HTTP 503)    │
+                                 │   - Retry on Shutdown (Conexión)  │
+                                 │   - Dashboard: 127.0.0.1:8080     │
+                                 └─────────────────┬─────────────────┘
+                                                   │ red: 'pdf-network'
+        ┌──────────────────────────────────────────┼──────────────────────────────────────────┐
+        ▼                                          ▼                                          ▼
+┌──────────────────────────────┐       ┌──────────────────────────────┐       ┌──────────────────────────────┐
+│     extractor (Réplicas)     │       │     documents (Persistencia) │       │      api (Orquestador)       │
+│  - Endpoint: POST /extract   │       │  - Endpoint: POST /documents │       │  - Endpoint: POST /process   │
+│  - DNS: extractor:8000       │       │  - DNS: documents:8000       │       │  - DNS: api:8000             │
+│  - Host: extractor.*.local   │       │  - Host: documents.*.local   │       │  - Host: api.*.local         │
+└──────────────────────────────┘       └──────────────┬───────────────┘       └──────────────┬───────────────┘
+                                                      │                                      │
+                                                      ▼                                      ▼
+                                             ┌─────────────────┐                    ┌─────────────────┐
+                                             │  mongodb:27017  │                    │ dragonfly:6379  │
+                                             │ (Base de Datos) │                    │ (Alias: redis)  │
+                                             └─────────────────┘                    └─────────────────┘
 ```
 
 ### Tabla Oficial de Enrutamiento y Direcciones
 
-| Servicio | Repositorio | DNS Interno en Docker | Puerto Interno | URL Interna (Inter-servicio) | Hostname Público Traefik (HTTP 80) |
+| Servicio | Repositorio | DNS Interno en Docker | Puerto Interno | URL Interna (Inter-servicio) | Hostname Ingress Traefik (HTTP 80) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Traefik Dashboard** | `pdf-infrastructure` | `traefik` | `8080` | `http://traefik:8080` | `http://traefik.universidad.localhost` (o `http://localhost:8080`) |
+| **Traefik Dashboard** | `pdf-infrastructure` | `traefik` | `8080` | `http://traefik:8080` | `http://traefik.universidad.localhost` (o `127.0.0.1:8080`) |
 | **Extractor Service** | `pdf-extractor-service` | `extractor` | `8000` | `http://extractor:8000` | `http://extractor.universidad.localhost` |
 | **Document Service** | `pdf-document-service` | `documents` | `8000` | `http://documents:8000` | `http://documents.universidad.localhost` |
 | **API Orchestrator** | `pdf-api-service` | `api` | `8000` | `http://api:8000` | `http://api.universidad.localhost` |
-| **MongoDB** (Datos) | `pdf-document-service` | `mongodb` | `27017` | `mongodb://mongodb:27017` | *No expuesto públicamente* |
-| **Redis** (Caché) | `pdf-infrastructure` | `redis` | `6379` | `redis://redis:6379/0` | *No expuesto públicamente* |
+| **MongoDB 7** (Datos) | `pdf-document-service` | `mongodb` | `27017` | `mongodb://mongodb:27017` | *No expuesto públicamente* |
+| **Dragonfly** (Caché) | `pdf-infrastructure` | `dragonfly` (alias `redis`) | `6379` | `redis://dragonfly:6379/0` (o `redis://redis:6379/0`) | *No expuesto públicamente* |
 
 ---
 
@@ -54,289 +58,123 @@ Todos los contenedores se integran a través de una red puente externa compartid
 > **ESTÁ ESTRICTAMENTE PROHIBIDO USAR `localhost` O `127.0.0.1` PARA COMUNICACIÓN ENTRE MICROSERVICIOS.**
 
 ### ¿Por qué falla `localhost`?
-En Linux y Docker, cada contenedor tiene su propio **Network Namespace (`netns`)** completamente aislado. La dirección de loopback `127.0.0.1` (`localhost`) hace referencia **única y exclusivamente al interior del propio contenedor**:
-- Si el servicio `api` intenta conectar a `http://localhost:8000/extract`, buscará el puerto 8000 dentro del contenedor de `api`, donde no existe ningún extractor, generando un error `ECONNREFUSED`.
-- Si `documents` intenta conectar a `mongodb://localhost:27017`, buscará el proceso de Mongo dentro de su propio contenedor en lugar del contenedor `mongodb`.
+En Linux y Docker, cada contenedor tiene su propio **Network Namespace (`netns`)** completamente aislado. La dirección `127.0.0.1` (`localhost`) hace referencia única y exclusivamente al interior del propio contenedor.
 
-### Solución Arquitectónica
-Dentro de la red `pdf-network`, el daemon de Docker ejecuta un servidor DNS interno (`127.0.0.11`) que resuelve automáticamente el nombre del servicio al IP virtual o balanceado de las instancias activas.
+Dentro de `pdf-network`, el DNS interno de Docker (`127.0.0.11`) resuelve automáticamente el nombre del servicio al IP balanceado de las instancias activas.
 
-Por lo tanto, la configuración en archivos `.env` y variables de entorno debe ser:
+Por lo tanto, las variables de entorno inter-servicio deben configurarse como:
 ```env
-# Comunicación dentro de 'pdf-network'
 EXTRACTOR_URL=http://extractor:8000
 DOCUMENT_SERVICE_URL=http://documents:8000
-MONGODB_URI=mongodb://mongodb:27017/pdf_documents
+MONGODB_URI=mongodb://mongodb:27017
 REDIS_URL=redis://redis:6379/0
 ```
 
 ---
 
-## 3. Snippets de `docker-compose.yml` para cada Repositorio
+## 3. Patrones de Resiliencia: Auditoría, Implementación y Fronteras
 
-A continuación se detallan los fragmentos de configuración listos para copiar y pegar en cada repositorio del equipo.
+### A. Frontera Externa (Ingress en Traefik v3.6)
+Los clientes externos y las herramientas de prueba (k6) ingresan al sistema a través de Traefik v3.6. En esta frontera se implementan de forma coordinada los tres patrones:
 
-### A. Repositorio `pdf-extractor-service`
+```
+[ Solicitud HTTP ] ──► [ 1. RateLimit ] ──► [ 2. CircuitBreaker ] ──► [ 3. Retry ] ──► [ Backend ]
+                            │                        │                     │
+                       HTTP 429                 HTTP 503              Reintento
+                    (Límite Excedido)       (Circuito Abierto)      (Falla de Red)
+```
+
+#### Justificación del Orden de Ejecución de Middlewares:
+1. **Rate Limiting primero (`rate-limit-extract` / `rate-limit-api`):** Protege la infraestructura descartando inmediatamente el tráfico abusivo o ráfagas que superan el `burst` con `HTTP 429 Too Many Requests`. Al estar al frente, evita que las peticiones abusivas abran indebidamente el Circuit Breaker o consuman reintentos del clúster.
+2. **Circuit Breaker segundo (`circuit-breaker-extractor` / `circuit-breaker-api`):** Si el servicio backend presenta una tasa elevada de fallos de red o respuestas 5xx (`NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25`), Traefik interrumpe el paso de solicitudes respondiendo `HTTP 503 Service Unavailable`, permitiendo que el microservicio se estabilice sin seguir recibiendo carga.
+3. **Retry tercero (`retry-on-shutdown`):** El middleware más cercano al backend. Si una réplica se apaga (durante despliegues continuos o escala) y se produce un corte transitorio a nivel socket, Traefik reenvía la petición a una réplica sana disponible.
+
+> [!WARNING]
+> **Precaución Crítica con Traefik Retry y peticiones POST (`/extract`):**  
+> En Traefik v3.6, el middleware Retry reenvía la solicitud **únicamente cuando el backend no responde** (falla a nivel socket / conexión rechazada). Traefik **deja de reintentar si recibe una respuesta HTTP**, independientemente de si el código es 5xx o 4xx. Esto garantiza que Traefik no reintente peticiones de extracción si el microservicio ya respondió formalmente, evitando ejecuciones duplicadas no deseadas.
+
+#### Exclusión Obligatoria de Sondas de Salud:
+Para evitar que las comprobaciones de salud queden bloqueadas por el limitador de solicitudes:
+- Se configuran routers dedicados de alta prioridad (`priority=100`) para `/health`, `/ready` y `/health/ready` **SIN** el middleware de RateLimit.
+- El router de negocio general (`priority=10`) es el único que aplica la cadena de RateLimit, CircuitBreaker y Retry.
+
+---
+
+### B. Frontera Interna (Llamadas Inter-Servicio entre Contenedores)
 
 > [!IMPORTANT]
-> **REGLA CRÍTICA:** **NO** definir `container_name`. Si se define `container_name`, Docker impedirá escalar el servicio con `--scale extractor=5` por colisión de nombres.
-> **NO** publicar puertos en el host (ej. `ports: "8000:8000"`), ya que colisionarían al haber más de una réplica. Traefik se encarga de enrutar el tráfico hacia los puertos internos.
+> **ANÁLISIS ARQUITECTÓNICO CRÍTICO:**  
+> Traefik **solo puede aplicar sus middlewares a las solicitudes que atraviesan sus routers**.  
+> En la arquitectura de microservicios, el API Orchestrator (`api`) se comunica directamente con `http://extractor:8000` y con `http://documents:8000` a través de la red de Docker `pdf-network`. Estas llamadas **no pasan por Traefik**.  
+> Por lo tanto, un Circuit Breaker o Retry configurado únicamente en Traefik **NO protege las comunicaciones internas**.
 
-```yaml
-version: '3.8'
-
-services:
-  extractor:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # Sin container_name para permitir escalabilidad horizontal
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 35s
-    networks:
-      - pdf-network
-    environment:
-      - PORT=8000
-      - PYTHONUNBUFFERED=1
-    # Límites de hardware exigidos por la cátedra
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-    # Healthcheck nativo de Docker (usando python urllib ya que python:slim no incluye curl/wget)
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
-    # Configuración de Traefik v3
-    labels:
-      - "traefik.enable=true"
-      # Middleware de reintentos para soportar desechabilidad y apagados dinámicos sin error 502
-      - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=3"
-      - "traefik.http.middlewares.retry-on-shutdown.retry.initialinterval=100ms"
-      # Enrutador HTTP
-      - "traefik.http.routers.extractor.rule=Host(`extractor.universidad.localhost`)"
-      - "traefik.http.routers.extractor.entrypoints=web"
-      - "traefik.http.routers.extractor.middlewares=retry-on-shutdown"
-      - "traefik.http.routers.extractor.service=extractor"
-      # Balanceador de carga y puerto interno de la app
-      - "traefik.http.services.extractor.loadbalancer.server.port=8000"
-      # Healthcheck de Traefik: descarta automáticamente réplicas que no respondan
-      - "traefik.http.services.extractor.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.extractor.loadbalancer.healthcheck.interval=3s"
-      - "traefik.http.services.extractor.loadbalancer.healthcheck.timeout=1s"
-
-networks:
-  pdf-network:
-    external: true
-```
+#### Especificación Técnica Requerida para `pdf-api-service`:
+El orquestador de API debe implementar en su cliente HTTP (`app/clients/base.py`, `app/clients/extractor.py`, `app/clients/documents.py`):
+1. **Retry con Backoff Exponencial y Jitter:** Reintentar únicamente ante fallos transitorios de red (`httpx.ConnectError`, `httpx.ConnectTimeout`) hasta un máximo de 2 o 3 intentos. **No** reintentar errores 4xx ni 500 definitivos.
+2. **Circuit Breaker a nivel aplicación:** Si el Extractor o Documents fallan de forma consecutiva (ej. 5 fallos consecutivos o >50% de error en 10s), abrir el circuito por 10s y responder de inmediato `503 Service Unavailable` sin bloquear hilos.
+3. **Timeouts Acotados:**
+   - Extractor: Conexión 5s, Lectura 30s (`EXTRACTOR_TIMEOUT_SECONDS`).
+   - Documents: Conexión 2s, Lectura 5s (`DOCUMENT_TIMEOUT_SECONDS`).
 
 ---
 
-### B. Repositorio `pdf-document-service`
+## 4. Reemplazo de Caché: Adopción de Dragonfly
 
-El microservicio de documentos es el **único dueño de la persistencia en MongoDB**. Ningún otro microservicio debe conectarse a Mongo directamente.
-
-```yaml
-version: '3.8'
-
-services:
-  mongodb:
-    image: mongo:7.0
-    restart: unless-stopped
-    networks:
-      - pdf-network
-    volumes:
-      - mongodb_data:/data/db
-    healthcheck:
-      test: ["CMD-SHELL", "mongosh --eval 'db.runCommand({ ping: 1 })' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-
-  documents:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 30s
-    networks:
-      - pdf-network
-    environment:
-      - PORT=8000
-      - MONGODB_URI=mongodb://mongodb:27017
-      - MONGODB_DATABASE=pdf_extractext
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.documents.rule=Host(`documents.universidad.localhost`)"
-      - "traefik.http.routers.documents.entrypoints=web"
-      - "traefik.http.routers.documents.middlewares=retry-on-shutdown"
-      - "traefik.http.routers.documents.service=documents"
-      - "traefik.http.services.documents.loadbalancer.server.port=8000"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.interval=2s"
-      - "traefik.http.services.documents.loadbalancer.healthcheck.timeout=1s"
-
-volumes:
-  mongodb_data:
-
-networks:
-  pdf-network:
-    external: true
-```
+Cumpliendo con la recomendación del profesor, se incorpora **Dragonfly** en sustitución de Redis:
+- **Tecnología:** [Dragonfly](https://dragonflydb.io/) v1.26.0 (imagen `docker.dragonflydb.io/dragonflydb/dragonfly:v1.26.0`).
+- **Compatibilidad:** Implementa el protocolo RESP2/RESP3. Es un reemplazo transparente (*drop-in replacement*) para Redis.
+- **Alias de Red:** En `pdf-network` se asigna el alias `redis` al contenedor `dragonfly`, permitiendo que todos los microservicios mantengan su variable `REDIS_URL=redis://redis:6379/0` sin necesidad de modificar código.
+- **Regla Estricta de la Cátedra (Perfil `cache`):** Dragonfly solo se inicia mediante el perfil `cache` (`docker compose --profile cache up -d dragonfly`). **Durante las pruebas de carga baseline con k6, Dragonfly debe permanecer apagado.**
 
 ---
 
-### C. Repositorio `pdf-api-service` (API Orchestrator)
+## 5. Factor IX: Desechabilidad (Disposability — Twelve-Factor App)
 
-El API Orchestrator coordina el flujo entre el cliente, el extractor y el gestor de documentos.
-
-```yaml
-version: '3.8'
-
-services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 30s
-    networks:
-      - pdf-network
-    environment:
-      - PORT=8000
-      - EXTRACTOR_URL=http://extractor:8000
-      - DOCUMENT_SERVICE_URL=http://documents:8000
-      # Redis se activa condicionalmente luego de la prueba de carga baseline
-      - REDIS_URL=redis://redis:6379/0
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 1G
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.api.rule=Host(`api.universidad.localhost`)"
-      - "traefik.http.routers.api.entrypoints=web"
-      - "traefik.http.routers.api.middlewares=retry-on-shutdown"
-      - "traefik.http.routers.api.service=api"
-      - "traefik.http.services.api.loadbalancer.server.port=8000"
-      - "traefik.http.services.api.loadbalancer.healthcheck.path=/health"
-      - "traefik.http.services.api.loadbalancer.healthcheck.interval=2s"
-      - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
-      - "traefik.http.services.api.loadbalancer.healthcheck.timeout=1s"
-
-networks:
-  pdf-network:
-    external: true
-```
+1. **Arranque Rápido (Fast Startup):**
+   - El contenedor pasa a estado `healthy` en menos de **5 segundos**.
+   - Se valida midiendo directamente el estado del contenedor específico creado (`docker inspect`), evitando falsos positivos del balanceador.
+2. **Apagado Elegante (Graceful Shutdown):**
+   - Captura limpia de señales `SIGTERM` / `SIGINT` (gracias a `init: true` y forma `exec` en `CMD`).
+   - Finalización ordenada con código de salida **`ExitCode = 0`** (nunca `137` en apagado normal).
+   - Drenado de peticiones en vuelo: durante el apagado, las extracciones en curso se completan exitosamente (`HTTP 200 OK` con JSON íntegro).
+   - Ventana de drenado configurada: `stop_grace_period: 35s` para `extractor` y `30s` para `documents` y `api`.
+3. **Resiliencia ante Muerte Súbita (Crash Resilience):**
+   - Si una instancia sufre una caída catastrófica (`SIGKILL`, código `137`), Traefik la retira automáticamente en la siguiente sonda y reenvía las solicitudes a las réplicas sobrevivientes con **0% de error**.
 
 ---
 
-## 4. Convención de Endpoints Mínimos Requeridos
+## 6. Endpoints Mínimos Requeridos y Contrato de Datos
 
-Para que el orquestador y los healthchecks de Traefik y Docker funcionen de manera uniforme:
-
-1. **Health Check (`GET /health`):**
-   - Todos los servicios deben implementar `GET /health` respondiendo `200 OK` con formato JSON:
-     ```json
-     {
-       "status": "ok",
-       "service": "extractor"  // o "documents", o "api"
-     }
-     ```
-2. **Extractor Service (`extractor`):**
-   - `POST /extract`: recibe el archivo PDF como cuerpo binario directo (`Content-Type: application/pdf` obligatorio, iniciando con `%PDF`) y retorna:
-     ```json
-     {
-       "content": "Texto extraído en formato Markdown...",
-       "page_count": 5
-     }
-     ```
-   - `GET /health/ready`: `200 OK` (degraded si no hay Redis, o 503 si el servicio está cerrándose).
-   - `GET /metrics`: métricas Prometheus cuando `METRICS_ENABLED=true` (contador de requests a `/extract`, etc.).
-3. **Document Service (`documents`):**
-   - `POST /documents`: persiste metadatos y Markdown en MongoDB. Retorna `201 Created` (o `200 OK` si el checksum ya existía).
-   - `GET /documents/by-checksum/{checksum}`: consulta por SHA-256 del PDF.
-   - `GET /documents/{id}`: consulta por ObjectId de MongoDB.
-   - `GET /health/ready`: `200 OK` si MongoDB responde; `503 Service Unavailable` si MongoDB no está disponible.
-4. **API Orchestrator (`api`):**
-   - `POST /process`: punto de entrada público principal. Acepta `application/pdf` binario o multipart con `file`. Orquesta el pipeline (consulta Documents por checksum -> si existe, retorna `source: "existing"`; si no existe, llama al Extractor, guarda en Documents y retorna `source: "extracted"`).
-   - `GET /ready`: consulta en paralelo el readiness de extractor y documents. Retorna `200 OK` si ambos están listos, o `503` detallando dependencias.
-
----
-
-## 5. Regla de Pruebas de Carga (Baseline vs. Post-Baseline con Redis)
-
-1. **Fase 1 (Pruebas Baseline k6 y Vegeta):**
-   - Redis **debe permanecer apagado**.
-   - Se mide la capacidad cruda del pipeline de extracción y almacenamiento.
-2. **Fase 2 (Optimización con Caché Redis):**
-   - Se levanta Redis en `pdf-infrastructure` mediante `docker compose --profile cache up -d redis`.
-   - El orquestador (`api`) o los servicios consultan `REDIS_URL` para almacenar en caché resultados frecuentes por hash de PDF.
-
----
-
-## 6. Factor IX: Desechabilidad (Disposability — Twelve-Factor App)
-
-El principio de **Desechabilidad** establece que los procesos deben ser efímeros: capaces de iniciarse rápidamente y detenerse de forma limpia y segura ante cualquier evento de ciclo de vida (escalado, despliegues continuos, fallos de nodo o reinicios).
-
-### A. Requisitos de Arranque Rápido (Fast Startup)
-- Los contenedores deben pasar a estado saludable (`healthy`) en menos de **5 segundos**.
-- Las conexiones a bases de datos y caché deben gestionarse en pools asíncronos no bloqueantes.
-
-### B. Protocolo Obligatorio de Apagado Elegante (Graceful Shutdown)
-Cuando Docker o el orquestador envía una señal `SIGTERM` (`docker stop`), cada microservicio debe ejecutar el siguiente ciclo:
-1. **Interceptar `SIGTERM` / `SIGINT`:** El proceso principal (PID 1) debe capturar la señal de terminación sin delegarla a shells que la ignoren.
-2. **Corte de Tráfico en Readiness Probe:** Cambiar inmediatamente el endpoint de readiness (`/health/ready` o `/ready`) a `503 Service Unavailable`, informando a Traefik que retire la instancia del balanceo.
-3. **Drenado de Peticiones en Vuelo (In-Flight Draining):** Permitir que las peticiones HTTP que ya comenzaron a procesarse (ej. extracción de PDF en curso) finalicen exitosamente antes de salir.
-4. **Cierre Ordenado de Recursos:** Cerrar ordenadamente los clientes de persistencia (`client.close()` en MongoDB, `cache.close()` en Redis, y pools HTTP de `httpx`).
-5. **Salida Limpia:** El proceso debe finalizar con código de salida `0` (indicando terminación exitosa, nunca `137` forzado por `SIGKILL`).
-
-### C. Directivas Docker Obligatorias en Compose
-Todo contenedor en el ecosistema debe incluir en su configuración de Compose:
-- **`stop_grace_period: 30s` (o `35s` para `extractor`):** Otorga una ventana de tiempo suficiente para finalizar la extracción de PDFs pesados antes de que Docker envíe `SIGKILL`.
-- **`init: true`:** Habilita el init system de Docker (`tini`) como PID 1 para garantizar la propagación de señales Unix a los procesos hijos y la eliminación de procesos zombi.
-- **Forma `exec` en Dockerfile:** En caso de usar comandos bash o shell en el `CMD`, siempre anteponer `exec` (ej. `CMD ["sh", "-c", "exec uvicorn ..."]`) para que Uvicorn reciba `SIGTERM`.
-
-### D. Resiliencia y Cero Downtime en Traefik
-Para proteger a los clientes de fallos durante el apagado de réplicas:
-- Se configura el middleware `retry-on-shutdown` en Traefik:
-  ```yaml
-  labels:
-    - "traefik.http.middlewares.retry-on-shutdown.retry.attempts=3"
-    - "traefik.http.middlewares.retry-on-shutdown.retry.initialinterval=100ms"
+### 1. Extractor Service (`extractor`):
+- `POST /extract`: Recibe PDF binario directo (`Content-Type: application/pdf`). Retorna `200 OK`:
+  ```json
+  {
+    "content": "Texto extraído en Markdown...",
+    "page_count": 279
+  }
   ```
-- Si un contenedor se apaga mientras una petición estaba en tránsito, Traefik reenvía la solicitud de forma transparente a una réplica sana, garantizando **0% de error percibido por el cliente**.
+- `GET /health`: Liveness del contenedor (retorna `200 OK {"status": "ok", "service": "extractor"}`).
+- `GET /health/ready`: Readiness probe (`200 OK` si listo, o `status: degraded` si no hay caché en baseline).
+- `GET /metrics`: Métricas Prometheus (contador de requests, saturación de workers).
+
+### 2. Document Service (`documents`):
+- `POST /documents`: Persiste documento en MongoDB. Retorna `201 Created` (o `200 OK` si el checksum ya existía).
+- `GET /documents/by-checksum/{checksum}`: Búsqueda por SHA-256.
+- `GET /documents/{id}`: Búsqueda por ObjectId.
+- `GET /health`: Liveness del proceso.
+- `GET /health/ready`: Readiness probe (`200 OK` si MongoDB responde; `503` si Mongo no está disponible).
+
+### 3. API Orchestrator (`api`):
+- `POST /process`: Orquestador principal. Acepta binario directo o multipart.
+  Retorna `ProcessResponse`:
+  ```json
+  {
+    "document_id": "6724fa...",
+    "checksum": "728c8a...",
+    "content": "...",
+    "page_count": 279,
+    "source": "extracted"  // O "existing" en deduplicación
+  }
+  ```
+- `GET /health`: Liveness de la API.
+- `GET /ready`: Readiness probe que evalúa en paralelo la disponibilidad de Extractor y Documents.

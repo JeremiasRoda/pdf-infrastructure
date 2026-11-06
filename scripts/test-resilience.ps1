@@ -1,121 +1,126 @@
 <#
-.SYNOPSIS
-    Demostración de Resiliencia, Balanceo y Tolerancia a Fallos con Traefik v3.
-.DESCRIPTION
-    1. Verifica la presencia de Traefik v3 y réplicas del servicio 'extractor'.
-    2. Detiene intencionalmente una réplica activa (Inyección de falla).
-    3. Lanza una ráfaga de peticiones HTTP concurrentes hacia Traefik.
-    4. Verifica que no haya pérdida de servicio (100% respuestas 200 OK).
+==============================================================================
+Demostración de Resiliencia y Alta Disponibilidad
+Cátedra: Desarrollo de Software - UTN FR San Rafael
+==============================================================================
 #>
 
-[CmdletBinding()]
-param (
-    [string]$TargetHost = "extractor.universidad.localhost",
-    [string]$TraefikUrl = "http://127.0.0.1:80/health",
-    [string]$PingUrl = "http://127.0.0.1:8080/ping",
-    [int]$BurstCount = 40
-)
-
 $ErrorActionPreference = "Stop"
+$TargetHost = "extractor.universidad.localhost"
+$TraefikUrl = "http://127.0.0.1:80"
+$TestPdf = "load-tests/pdfs/doc1.pdf"
+$BurstCount = 20
 
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "   UTN FRSR - DEMOSTRACIÓN DE TOLERANCIA A FALLOS Y RESILIENCIA      " -ForegroundColor Cyan
+Write-Host "   UTN FRSR - DEMOSTRACIÓN DE TOLERANCIA A FALLOS Y RESILIENCIA       " -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
 
-# 1. Verificar conectividad con Traefik
-Write-Host "`n[PASO 1] Verificando disponibilidad de Traefik..." -ForegroundColor Yellow
+# 1. Verificar Traefik
 try {
-    $pingResponse = Invoke-RestMethod -Uri $PingUrl -TimeoutSec 3 -ErrorAction Stop
-    if ($pingResponse -eq "OK") {
-        Write-Host "[OK] Traefik v3 activo y respondiendo." -ForegroundColor Green
+    $ping = Invoke-WebRequest -Uri "http://127.0.0.1:8080/ping" -UseBasicParsing -TimeoutSec 3
+    Write-Host "[OK] Traefik v3 activo y escuchando." -ForegroundColor Green
+} catch {
+    Write-Host "[ERROR] Traefik no responde en 127.0.0.1:8080. Inicie con 'docker compose up -d'." -ForegroundColor Red
+    exit 1
+}
+
+# 2. Asegurar fixture PDF
+if (-not (Test-Path $TestPdf)) {
+    $parent = Split-Path -Parent $TestPdf
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    $pdfMinimal = @"
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+endobj
+xref
+0 4
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+trailer
+<< /Size 4 /Root 1 0 R >>
+startxref
+190
+%%EOF
+"@
+    [System.IO.File]::WriteAllText($TestPdf, $pdfMinimal)
+}
+
+$initialContainers = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
+$initialCount = $initialContainers.Count
+if ($initialCount -lt 3) { $initialCount = 3 }
+
+try {
+    if ($initialContainers.Count -lt 2) {
+        Write-Host "Escalando a 3 réplicas base para pruebas..." -ForegroundColor Yellow
+        docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor | Out-Null
+        Start-Sleep -Seconds 3
+        $initialContainers = (docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
     }
-}
-catch {
-    Write-Host "[ERROR] Traefik no está respondiendo en el puerto 8080." -ForegroundColor Red
-    Write-Host "Asegúrese de haber ejecutado: docker compose up -d" -ForegroundColor Yellow
-    exit 1
-}
 
-# 2. Contar réplicas del extractor en Docker
-Write-Host "`n[PASO 2] Detectando réplicas del microservicio 'extractor'..." -ForegroundColor Yellow
-$containers = docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"
-if (-not $containers) {
-    $containers = docker ps --filter "name=extractor" --format "{{.ID}}"
-}
+    Write-Host "Instancias activas de extractor: $($initialContainers.Count)" -ForegroundColor Green
 
-$containerList = @($containers -split "`r?`n" | Where-Object { $_ -ne "" })
-$totalInstances = $containerList.Count
+    # Inyección de Falla
+    $victimId = $initialContainers[0]
+    $victimName = (docker inspect -f '{{.Name}}' $victimId).TrimStart('/')
+    Write-Host "`n[INYECCIÓN DE FALLA] Deteniendo réplica $victimName con 'docker stop'..." -ForegroundColor Yellow
 
-Write-Host "Instancias activas de 'extractor' detectadas: " -NoNewline
-Write-Host "$totalInstances" -ForegroundColor Green
+    $stopJob = Start-Job -ScriptBlock {
+        param($cid)
+        docker stop $cid | Out-Null
+    } -ArgumentList $victimId
 
-if ($totalInstances -lt 2) {
-    Write-Host "[ADVERTENCIA] Se requieren al menos 2 réplicas para demostrar resiliencia." -ForegroundColor Red
-    Write-Host "Para escalar a 5 réplicas, ejecute:" -ForegroundColor Yellow
-    Write-Host "  docker compose -f docker-compose.integration.yml up -d --scale extractor=5" -ForegroundColor Cyan
-    exit 1
-}
+    Write-Host "Enviando ráfaga de $BurstCount extracciones reales hacia Traefik..." -ForegroundColor Yellow
+    $okCount = 0
+    $failCount = 0
 
-# Listar detalle de las instancias
-Write-Host "Detalle de réplicas en ejecución:"
-foreach ($cid in $containerList) {
-    $cname = (docker inspect -f '{{.Name}}' $cid).TrimStart('/')
-    $cip = docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $cid
-    Write-Host "  - ID: $($cid.Substring(0, [Math]::Min(12, $cid.Length))) | Nombre: $cname | IP: $cip" -ForegroundColor Cyan
-}
+    for ($i = 1; $i -le $BurstCount; $i++) {
+        $httpCode = curl.exe -s -o /dev/null -w "%{http_code}" -X POST "$TraefikUrl/extract" `
+            -H "Host: $TargetHost" `
+            -H "Content-Type: application/pdf" `
+            -H "X-Filename: resilience_test.pdf" `
+            --data-binary "@$TestPdf"
 
-# 3. Seleccionar y matar una réplica
-$victimId = $containerList[0]
-$victimName = (docker inspect -f '{{.Name}}' $victimId).TrimStart('/')
-Write-Host "`n[PASO 3] Inyectando falla: Deteniendo contenedor réplica '$victimName' ($($victimId.Substring(0,12)))..." -ForegroundColor Yellow
-docker stop $victimId | Out-Null
-Write-Host "[OK] Réplica detenida." -ForegroundColor Green -NoNewline
-Write-Host " Quedan $($totalInstances - 1) réplicas vivas."
-
-# 4. Disparar ráfaga de peticiones a través de Traefik
-Write-Host "`n[PASO 4] Disparando ráfaga de $BurstCount peticiones hacia http://$TargetHost/health..." -ForegroundColor Yellow
-
-$okCount = 0
-$failCount = 0
-
-for ($i = 1; $i -le $BurstCount; $i++) {
-    try {
-        # Usamos Invoke-WebRequest con Header Host para rutear vía localhost:80
-        $response = Invoke-WebRequest -Uri $TraefikUrl -Headers @{ Host = $TargetHost } -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
-        if ($response.StatusCode -eq 200) {
+        if ($httpCode -eq "200") {
             $okCount++
-            Write-Host "." -ForegroundColor Green -NoNewline
+            Write-Host -NoNewline "." -ForegroundColor Green
         } else {
             $failCount++
-            Write-Host "X" -ForegroundColor Red -NoNewline
+            Write-Host -NoNewline "X($httpCode)" -ForegroundColor Red
         }
+        Start-Sleep -Milliseconds 60
     }
-    catch {
-        $failCount++
-        Write-Host "X" -ForegroundColor Red -NoNewline
+    Write-Host ""
+
+    Receive-Job -Job $stopJob -Wait | Out-Null
+    Remove-Job -Job $stopJob -Force | Out-Null
+
+    Write-Host "`n======================================================================" -ForegroundColor Cyan
+    Write-Host "                        REPORTE DE RESILIENCIA                        " -ForegroundColor Cyan
+    Write-Host "======================================================================" -ForegroundColor Cyan
+    Write-Host "Total de solicitudes enviadas: $BurstCount"
+    Write-Host "Respuestas exitosas (200 OK):  $okCount" -ForegroundColor Green
+    Write-Host "Solicitudes fallidas:          $failCount" -ForegroundColor Red
+
+    if ($failCount -eq 0) {
+        Write-Host "`n✔ ÉXITO TOTAL: 100% de peticiones atendidas sin degradación por el clúster." -ForegroundColor Green
+    } else {
+        Write-Host "`n✘ HUBO FALLAS ($failCount solicitudes caídas). Verifique middleware de reintentos." -ForegroundColor Red
+        exit 1
     }
-    Start-Sleep -Milliseconds 25
+
+} finally {
+    Write-Host "`n======================================================================" -ForegroundColor Cyan
+    Write-Host "                    RESTAURANDO ESTADO DEL CLÚSTER                    " -ForegroundColor Cyan
+    Write-Host "======================================================================" -ForegroundColor Cyan
+    docker compose -f docker-compose.integration.yml up -d --no-deps --scale "extractor=$initialCount" extractor 2>$null | Out-Null
+    Write-Host "[OK] Clúster restablecido a $initialCount réplicas saludables." -ForegroundColor Green
 }
-Write-Host ""
-
-# 5. Reporte de Resultados
-Write-Host "`n======================================================================" -ForegroundColor Cyan
-Write-Host "                        REPORTE DE AUDITORÍA                          " -ForegroundColor Cyan
-Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "Total de peticiones enviadas: $BurstCount"
-Write-Host "Respuestas exitosas (200 OK): " -NoNewline
-Write-Host "$okCount" -ForegroundColor Green
-Write-Host "Peticiones fallidas:          " -NoNewline
-Write-Host "$failCount" -ForegroundColor Red
-
-if ($failCount -eq 0) {
-    Write-Host "`n✔ ÉXITO TOTAL (0% de errores): Traefik balanceó transparentemente la carga" -ForegroundColor Green
-    Write-Host "  hacia las réplicas sanas sin degradación de servicio percibida por el cliente." -ForegroundColor Green
-} else {
-    $errPct = [Math]::Round(($failCount / $BurstCount) * 100, 2)
-    Write-Host "`n✘ HUBO ERRORES ($errPct% de fallas). Verifique el healthcheck en Traefik." -ForegroundColor Red
-}
-
-Write-Host "`n[PASO 5] Para restaurar la réplica o volver al estado deseado:" -ForegroundColor Yellow
-Write-Host "  docker compose -f docker-compose.integration.yml up -d --scale extractor=5`n" -ForegroundColor Cyan
-Write-Host "======================================================================" -ForegroundColor Cyan

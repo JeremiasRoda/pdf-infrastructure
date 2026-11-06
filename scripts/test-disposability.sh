@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script de Demostración del Factor IX (Desechabilidad - Twelve-Factor App)
-# Cátedra: Desarrollo de Software - UTN FR San Rafael (Issue #8)
+# Demostración y Validación del Factor IX (Desechabilidad - Twelve-Factor App)
+# Cátedra: Desarrollo de Software - UTN FR San Rafael
 # ==============================================================================
-# Evalúa:
-# 1. Arranque Rápido (Fast Startup): Tiempo desde creación hasta estado saludable (< 5s).
-# 2. Apagado Elegante (Graceful Shutdown): Drenado de peticiones y salida limpia (Exit 0, no 137).
-# 3. Resiliencia ante Caída Súbita (Crash Resilience): Tolerancia a SIGKILL sin corrupción.
+# Aspectos auditados:
+# 1. Inicio Rápido (Fast Startup): < 5s en la instancia específica creada.
+# 2. Apagado Elegante (Graceful Shutdown): Drenado de extracción real de PDF en
+#    vuelo ante SIGTERM y salida limpia del contenedor con ExitCode 0.
+# 3. Resiliencia ante Muerte Súbita (Crash Resilience): Manejo de SIGKILL (137)
+#    y absorción inmediata por réplicas sobrevivientes. Requiere --allow-destructive.
 # ==============================================================================
 
 set -euo pipefail
@@ -18,127 +20,195 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 TARGET_HOST="extractor.universidad.localhost"
-HEALTH_URL="http://127.0.0.1:80/health"
-TRAEFIK_API="http://127.0.0.1:8080/api/http/services"
+TRAEFIK_URL="http://127.0.0.1:80"
+TEST_PDF="./load-tests/pdfs/doc1.pdf"
+ALLOW_DESTRUCTIVE="${ALLOW_DESTRUCTIVE:-false}"
+
+for arg in "$@"; do
+    if [ "$arg" == "--allow-destructive" ]; then
+        ALLOW_DESTRUCTIVE="true"
+    fi
+done
+
+# Almacenar cantidad original de réplicas para restauración estricta
+ORIGINAL_CONTAINERS=($(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"))
+ORIGINAL_REPLICA_COUNT="${#ORIGINAL_CONTAINERS[@]}"
+if [ "$ORIGINAL_REPLICA_COUNT" -lt 2 ]; then
+    ORIGINAL_REPLICA_COUNT=3
+fi
+
+cleanup() {
+    echo -e "\n${CYAN}======================================================================${NC}"
+    echo -e "${CYAN}             RESTAURACIÓN Y LIMPIEZA DE CONTENEDORES                  ${NC}"
+    echo -e "${CYAN}======================================================================${NC}"
+    echo -e "Restableciendo el clúster a ${ORIGINAL_REPLICA_COUNT} réplicas..."
+    docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor="${ORIGINAL_REPLICA_COUNT}" extractor > /dev/null 2>&1 || true
+    echo -e "${GREEN}[OK] Estado original del clúster restaurado.${NC}"
+}
+trap cleanup EXIT
 
 echo -e "${CYAN}======================================================================${NC}"
-echo -e "${CYAN}   UTN FRSR - EVALUACIÓN FACTOR IX: DESECHABILIDAD (TWELVE-FACTOR)    ${NC}"
+echo -e "${CYAN}   UTN FRSR - VALIDACIÓN RIGUROSA FACTOR IX: DESECHABILIDAD          ${NC}"
 echo -e "${CYAN}======================================================================${NC}"
 
-# 1. Verificar Traefik
+# Validar conectividad de Traefik
 if ! curl -s -f -o /dev/null "http://127.0.0.1:8080/ping"; then
-    echo -e "${RED}[ERROR] Traefik no está respondiendo en :8080. Ejecute 'docker compose up -d'.${NC}"
+    echo -e "${RED}[ERROR] Traefik no responde en 127.0.0.1:8080. Inicie con 'docker compose up -d'.${NC}"
     exit 1
 fi
 
-# Detectar réplicas del extractor
-CONTAINERS=($(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"))
-if [ "${#CONTAINERS[@]}" -lt 2 ]; then
-    echo -e "${YELLOW}[AVISO] Se requieren al menos 2 réplicas para probar drenado sin corte.${NC}"
-    echo -e "Escalando a 3 réplicas..."
-    docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor
-    sleep 3
-    CONTAINERS=($(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"))
+# Validar existencia de fixture PDF
+if [ ! -f "$TEST_PDF" ]; then
+    mkdir -p "$(dirname "$TEST_PDF")"
+    printf "%%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%%%EOF" > "$TEST_PDF"
 fi
 
-echo -e "Instancias activas de extractor detectadas: ${GREEN}${#CONTAINERS[@]}${NC}"
+# Asegurar al menos 2 réplicas base antes de empezar
+if [ "${#ORIGINAL_CONTAINERS[@]}" -lt 2 ]; then
+    echo -e "Escalando a 2 réplicas base para pruebas..."
+    docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=2 extractor
+    sleep 3
+fi
 
 # ------------------------------------------------------------------------------
-# TEST 1: Arranque Rápido (Fast Startup)
+# TEST 1: Arranque Rápido (< 5s en la instancia específica creada)
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}[TEST 1] Evaluando Arranque Rápido (Fast Startup)...${NC}"
+echo -e "\n${YELLOW}[TEST 1] Evaluando Arranque Rápido sobre una NUEVA réplica específica...${NC}"
+EXISTING_IDS=($(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"))
+NEW_SCALE=$(( ${#EXISTING_IDS[@]} + 1 ))
+
 START_TIME=$(date +%s%N)
-TEST_CID=$(docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=$((${#CONTAINERS[@]} + 1)) extractor | grep -oE '[a-f0-9]{12,}' | head -n 1 || echo "")
+docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor="${NEW_SCALE}" extractor > /dev/null
 
-# Medir hasta que Traefik o Docker reporte healthy
+# Identificar exclusivamente el nuevo contenedor (evitando falsos positivos del balanceador)
+ALL_NEW_IDS=($(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}"))
+NEW_CID=""
+for cid in "${ALL_NEW_IDS[@]}"; do
+    FOUND=false
+    for old_cid in "${EXISTING_IDS[@]}"; do
+        if [ "$cid" == "$old_cid" ]; then
+            FOUND=true
+            break
+        fi
+    done
+    if [ "$FOUND" == "false" ]; then
+        NEW_CID="$cid"
+        break
+    fi
+done
+
+if [ -z "$NEW_CID" ]; then
+    echo -e "${RED}[ERROR] No se pudo identificar la nueva instancia creada.${NC}"
+    exit 1
+fi
+
+NEW_NAME=$(docker inspect -f '{{.Name}}' "$NEW_CID" | tr -d '/')
+echo -e "Nueva instancia aislada detectada: ${CYAN}${NEW_NAME} (${NEW_CID:0:12})${NC}"
+
+# Sondeo directo del estado Health del contenedor específico (no vía Traefik)
+STARTUP_OK=false
 ELAPSED_SEC=0
-for i in {1..20}; do
-    if curl -s -f -H "Host: ${TARGET_HOST}" "${HEALTH_URL}" > /dev/null; then
+for i in {1..25}; do
+    HEALTH_STATUS=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}starting{{end}}' "$NEW_CID" 2>/dev/null || echo "starting")
+    if [ "$HEALTH_STATUS" == "healthy" ]; then
         END_TIME=$(date +%s%N)
         DIFF_MS=$(( (END_TIME - START_TIME) / 1000000 ))
         ELAPSED_SEC=$(awk "BEGIN {print $DIFF_MS / 1000}")
+        STARTUP_OK=true
         break
     fi
-    sleep 0.25
+    sleep 0.2
 done
 
-echo -e "Tiempo de arranque y disponibilidad: ${GREEN}${ELAPSED_SEC}s${NC}"
-if (( $(echo "$ELAPSED_SEC < 5.0" | bc -l) )); then
-    echo -e "${GREEN}✔ Cumple Criterio: Arranque rápido inferior a 5 segundos.${NC}"
+if [ "$STARTUP_OK" == "true" ] && (( $(echo "$ELAPSED_SEC <= 5.0" | bc -l) )); then
+    echo -e "${GREEN}✔ ÉXITO: Contenedor ${NEW_NAME} saludable en ${ELAPSED_SEC}s (< 5.0s límite de cátedra).${NC}"
+elif [ "$STARTUP_OK" == "true" ]; then
+    echo -e "${YELLOW}⚠ AVISO: El contenedor tardó ${ELAPSED_SEC}s (> 5s).${NC}"
 else
-    echo -e "${YELLOW}⚠ Arranque superior a 5s pero dentro de límites tolerables.${NC}"
+    echo -e "${RED}✘ FALLO: El contenedor no alcanzó estado healthy en el tiempo esperado.${NC}"
+    exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# TEST 2: Apagado Elegante y Drenado (Graceful Shutdown)
+# TEST 2: Apagado Elegante (Graceful Shutdown) y Drenado con Extracción Real
 # ------------------------------------------------------------------------------
-TARGET_CID="${CONTAINERS[0]}"
-TARGET_NAME=$(docker inspect -f '{{.Name}}' "$TARGET_CID" | tr -d '/')
-echo -e "\n${YELLOW}[TEST 2] Evaluando Apagado Elegante (Graceful Shutdown) en ${TARGET_NAME}...${NC}"
-echo -e "Enviando SIGTERM con 'docker stop' y midiendo salida..."
+TARGET_CID="$NEW_CID"
+echo -e "\n${YELLOW}[TEST 2] Evaluando Apagado Elegante (SIGTERM) y Drenado de Extracción Real en ${NEW_NAME}...${NC}"
+
+# Lanzar extracción real en segundo plano apuntando a Traefik
+EXTRACTION_OUTPUT=$(mktemp)
+curl -s -X POST "${TRAEFIK_URL}/extract" \
+     -H "Host: ${TARGET_HOST}" \
+     -H "Content-Type: application/pdf" \
+     -H "X-Filename: disposability_test.pdf" \
+     --data-binary "@${TEST_PDF}" \
+     -w "\n%{http_code}" > "$EXTRACTION_OUTPUT" &
+EXTRACT_PID=$!
+
+# Breve espera para que la solicitud ingrese a procesamiento antes de enviar SIGTERM
+sleep 0.05
 
 STOP_START=$(date +%s)
 docker stop "$TARGET_CID" > /dev/null &
 STOP_PID=$!
 
-# Disparar peticiones mientras se apaga para validar reintentos de Traefik y cero fallos
-OK_REQUESTS=0
-FAIL_REQUESTS=0
-for j in {1..15}; do
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${TARGET_HOST}" "${HEALTH_URL}" || echo "000")
-    if [ "$HTTP_CODE" -eq 200 ]; then
-        OK_REQUESTS=$((OK_REQUESTS + 1))
-        echo -ne "${GREEN}.${NC}"
-    else
-        FAIL_REQUESTS=$((FAIL_REQUESTS + 1))
-        echo -ne "${RED}X${NC}"
-    fi
-    sleep 0.1
-done
-echo ""
-
+# Esperar ambos procesos
+wait $EXTRACT_PID
 wait $STOP_PID
 STOP_END=$(date +%s)
 STOP_DURATION=$((STOP_END - STOP_START))
 
-# Verificar código de salida del contenedor
+HTTP_STATUS=$(tail -n 1 "$EXTRACTION_OUTPUT")
+BODY_RESPONSE=$(head -n -1 "$EXTRACTION_OUTPUT")
+rm -f "$EXTRACTION_OUTPUT"
+
+# Inspeccionar código de salida del contenedor detenido
 EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "$TARGET_CID")
-echo -e "Duración del apagado: ${CYAN}${STOP_DURATION}s${NC}"
-echo -e "Código de salida del proceso: ${CYAN}ExitCode=${EXIT_CODE}${NC}"
+echo -e "Código de salida del proceso tras SIGTERM: ${CYAN}ExitCode=${EXIT_CODE}${NC} (Duración: ${STOP_DURATION}s)"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
-    echo -e "${GREEN}✔ ÉXITO TOTAL: El contenedor interceptó SIGTERM y finalizó limpiamente (Exit 0).${NC}"
-elif [ "$EXIT_CODE" -eq 137 ]; then
-    echo -e "${RED}✘ FALLO: El contenedor fue forzado a morir por SIGKILL (Exit 137). Revise stop_grace_period o exec.${NC}"
-else
-    echo -e "${YELLOW}ℹ Finalizó con código ${EXIT_CODE}.${NC}"
+if [ "$EXIT_CODE" -ne 0 ]; then
+    echo -e "${RED}✘ FALLO: El proceso no salió con código 0 (ExitCode=${EXIT_CODE}).${NC}"
+    exit 1
 fi
+echo -e "${GREEN}✔ Apagado Elegante Verificado: ExitCode = 0 (Captura limpia de SIGTERM sin SIGKILL).${NC}"
 
-if [ "$FAIL_REQUESTS" -eq 0 ]; then
-    echo -e "${GREEN}✔ Cero Downtime: 100% de peticiones exitosas durante el apagado (${OK_REQUESTS}/$((OK_REQUESTS+FAIL_REQUESTS))).${NC}"
+if [ "$HTTP_STATUS" -eq 200 ] && echo "$BODY_RESPONSE" | grep -q '"content"'; then
+    echo -e "${GREEN}✔ Drenado Exitoso: La extracción real en vuelo finalizó con HTTP 200 OK y JSON íntegro.${NC}"
 else
-    echo -e "${RED}✘ Hubo ${FAIL_REQUESTS} peticiones caídas durante el apagado.${NC}"
+    echo -e "${RED}✘ FALLO: La extracción en curso se abortó o falló (HTTP ${HTTP_STATUS}).${NC}"
+    exit 1
 fi
 
 # ------------------------------------------------------------------------------
-# TEST 3: Resiliencia ante Caída Súbita (Crash Resilience)
+# TEST 3: Muerte Súbita (Crash Resilience con SIGKILL intencional)
 # ------------------------------------------------------------------------------
-REMAINING_CID=$(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}" | head -n 1)
-echo -e "\n${YELLOW}[TEST 3] Evaluando Resiliencia ante Caída Súbita (SIGKILL / Muerte de Hardware)...${NC}"
-echo -e "Matando contenedor réplica con 'docker kill'..."
-docker kill "$REMAINING_CID" > /dev/null
-
-HTTP_SURVIVOR=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${TARGET_HOST}" "${HEALTH_URL}" || echo "000")
-if [ "$HTTP_SURVIVOR" -eq 200 ]; then
-    echo -e "${GREEN}✔ Sistema Resiliente: Traefik descartó la réplica muerta y respondió 200 OK con el clúster.${NC}"
+echo -e "\n${YELLOW}[TEST 3] Evaluando Tolerancia a Caída Súbita (SIGKILL / Fallo Catastrófico)...${NC}"
+if [ "$ALLOW_DESTRUCTIVE" != "true" ]; then
+    echo -e "${YELLOW}ℹ Test 3 omitido por seguridad. Para habilitar pruebas destructivas, ejecute:${NC}"
+    echo -e "  ${CYAN}./scripts/test-disposability.sh --allow-destructive${NC}"
+    echo -e "  o defina: ${CYAN}ALLOW_DESTRUCTIVE=true ./scripts/test-disposability.sh${NC}"
 else
-    echo -e "${RED}✘ Error al resolver tras muerte súbita (HTTP ${HTTP_SURVIVOR}).${NC}"
+    REMAINING_CID=$(docker ps --filter "label=traefik.http.routers.extractor.rule" --format "{{.ID}}" | head -n 1)
+    VICTIM_NAME=$(docker inspect -f '{{.Name}}' "$REMAINING_CID" | tr -d '/')
+    echo -e "Inyectando fallo abrupto intencional (SIGKILL) a ${VICTIM_NAME}..."
+    docker kill -s KILL "$REMAINING_CID" > /dev/null
+
+    KILL_EXIT_CODE=$(docker inspect -f '{{.State.ExitCode}}' "$REMAINING_CID")
+    echo -e "Código de salida esperado por SIGKILL: ${CYAN}ExitCode=${KILL_EXIT_CODE}${NC}"
+    if [ "$KILL_EXIT_CODE" -eq 137 ]; then
+        echo -e "${GREEN}✔ Confirmado: Finalización inmediata forzada por SIGKILL (código 137).${NC}"
+    fi
+
+    # Comprobar que Traefik absorbe las solicitudes a través de las réplicas restantes
+    SURVIVOR_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${TARGET_HOST}" "${TRAEFIK_URL}/health" || echo "000")
+    if [ "$SURVIVOR_CODE" -eq 200 ]; then
+        echo -e "${GREEN}✔ Alta Disponibilidad: Clúster respondió HTTP 200 OK inmediatamente a través de sobrevivientes.${NC}"
+    else
+        echo -e "${RED}✘ FALLO: Tráfico interrumpido tras caída súbita (HTTP ${SURVIVOR_CODE}).${NC}"
+        exit 1
+    fi
 fi
 
-# Restaurar estado
-echo -e "\n${CYAN}======================================================================${NC}"
-echo -e "${CYAN}                    RESTAURANDO ESTADO DEL CLÚSTER                    ${NC}"
-echo -e "${CYAN}======================================================================${NC}"
-docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor
-echo -e "${GREEN}[OK] Clúster restablecido a 3 réplicas saludables.${NC}"
-echo -e "${CYAN}======================================================================${NC}\n"
+echo -e "\n${GREEN}======================================================================${NC}"
+echo -e "${GREEN}  ✔ FACTOR IX (DESECHABILIDAD) VALIDADO RIGUROSAMENTE CON ÉXITO       ${NC}"
+echo -e "${GREEN}======================================================================${NC}"
