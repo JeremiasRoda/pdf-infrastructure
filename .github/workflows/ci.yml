@@ -19,6 +19,15 @@ jobs:
           test -f .env.example
           cp .env.example .env
 
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validar Sintaxis de Scripts Python
+        run: |
+          python3 -m py_compile registrator/registrator.py
+
       - name: Validar Sintaxis de Scripts Bash
         run: |
           bash -n init-network.sh
@@ -26,6 +35,15 @@ jobs:
             echo "Verificando sintaxis de $script..."
             bash -n "$script"
           done
+
+      - name: Instalar dependencias de validación YAML
+        run: |
+          python3 -m pip install --upgrade pip pyyaml
+
+      - name: Validar Formato YAML de Traefik y Middlewares
+        run: |
+          python3 -c "import yaml; yaml.safe_load(open('traefik/traefik.yml'))"
+          python3 -c "import yaml; yaml.safe_load(open('traefik/dynamic/middlewares.yml'))"
 
       - name: Validar Sintaxis de Docker Compose Base
         run: |
@@ -37,8 +55,3 @@ jobs:
           mkdir -p ../pdf-extractor-service ../pdf-document-service ../pdf-api-service
           touch ../pdf-extractor-service/Dockerfile ../pdf-document-service/Dockerfile ../pdf-api-service/Dockerfile
           docker compose -f docker-compose.integration.yml config --quiet
-
-      - name: Validar Formato YAML de Traefik y Middlewares
-        run: |
-          python3 -c "import yaml; yaml.safe_load(open('traefik/traefik.yml'))"
-          python3 -c "import yaml; yaml.safe_load(open('traefik/dynamic/middlewares.yml'))"

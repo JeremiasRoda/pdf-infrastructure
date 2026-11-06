@@ -16,6 +16,11 @@ load-tests/results/
 load-tests/reports/
 vegeta-targets.txt
 
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Logs y volcados del sistema
 *.log
 .DS_Store

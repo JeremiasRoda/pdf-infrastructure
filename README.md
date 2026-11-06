@@ -74,7 +74,8 @@ flowchart TD
 
 Consul opera como la **fuente única de verdad** para el descubrimiento de servicios dinámicos:
 - **Instancias Individuales:** Cada réplica del Extractor se registra con un ID único (`extractor-<container_id>`) y su dirección IP asignada en `pdf-network` (ej. `172.28.0.7`).
-- **Health Checks de Consul:** Cada instancia cuenta con una sonda HTTP periódica (`http://<IP>:8000/health` cada 3s). Si una réplica falla, Consul la marca como crítica y Traefik la desaloja del balanceo.
+- **Health Checks de Readiness en Consul:** Cada instancia cuenta con una sonda HTTP periódica apuntando a su endpoint de preparación (`http://<IP>:8000/health/ready` para Extractor/Documents, y `/ready` para API, cada 3s).
+- **Filtrado Estricto en Traefik (`strictChecks: ["passing"]`):** Traefik v3.6 descarta automáticamente cualquier backend cuyo estado sea `warning` o `critical`, impidiendo que peticiones de clientes ingresen a réplicas en proceso de apagado o degradadas.
 - **Sincronización en Tiempo Real (`consul-registrator`):** Escucha eventos de Docker (`start`, `die`, `stop`, `kill`) para altas y bajas inmediatas, complementado con reconciliación periódica cada 10 segundos ante inconsistencias de red.
 - **Sin Duplicación de Routers:** Los microservicios tienen `traefik.enable=false` en sus etiquetas de Docker, evitando que Docker Provider cree routers duplicados. Consul Catalog es el único responsable del enrutamiento de los microservicios.
 
@@ -91,14 +92,21 @@ Los middlewares dinámicos residen en `traefik/dynamic/middlewares.yml` (proveed
 1. **Rate Limiting (`rate-limit-extract@file` / `rate-limit-api@file`):** Descarta ráfagas excesivas con `HTTP 429 Too Many Requests`. Los endpoints de salud (`/health`, `/ready`) tienen router prioritario (`priority=100`) **sin** limitador para no bloquear las comprobaciones de Consul o Docker.
 2. **Circuit Breaker (`circuit-breaker-extractor@file`):** Interrumpe temporalmente el tráfico respondiendo `HTTP 503 Service Unavailable` si la tasa de fallos de red o errores 5xx supera el umbral ($\text{NetworkErrorRatio}() > 0.30 \lor \text{ResponseCodeRatio}(500, 600, 0, 600) > 0.25$).
 3. **Retry (`retry-on-shutdown@file`):** Reintenta hasta 3 veces con 100ms iniciales **únicamente si el socket no responde** (falla transitoria). Si el microservicio devuelve cualquier código HTTP (200, 4xx, 5xx), Traefik **no** reintenta, garantizando que operaciones no idempotentes (`POST /extract`) no se dupliquen.
+4. **Frontera de Ingress vs. Llamadas Internas:** Traefik protege exclusivamente el tráfico Ingress. Para las llamadas inter-servicio internas (`api` hacia `extractor:8000` o `documents:8000`), el API Orchestrator debe implementar en su cliente HTTP reintentos con backoff exponencial y jitter, y circuit breaker a nivel de cliente.
 
 ---
 
-## Factor IX: Desechabilidad y Apagado Elegante
+## Factor IX: Desechabilidad y Secuencia de Drenado Controlado
 
 - **Arranque Rápido:** Contenedores pasan a `healthy` en menos de **5 segundos** (medido de forma aislada en la instancia nueva vía `docker inspect`).
-- **Manejo de Señales Unix:** `init: true` y forma `exec` en `CMD` garantizan propagación limpia de `SIGTERM`.
-- **Drenado de Peticiones en Vuelo:** Ventanas de `stop_grace_period: 35s` (extractor) y `30s` (documents y api) permiten finalizar extracciones en curso durante un escalado o despliegue, saliendo con **`ExitCode = 0`**.
+- **Manejo de Señales Unix:** `init: true` (PID 1 con tini) y forma `exec` en `CMD` garantizan propagación limpia de `SIGTERM`.
+- **Secuencia de Drenado Controlado:**
+  1. Al recibir `SIGTERM`, el microservicio marca `shutting_down = True`.
+  2. Su endpoint de readiness (`/health/ready` o `/ready`) devuelve inmediatamente `HTTP 503`.
+  3. Consul marca la instancia como `critical`.
+  4. Traefik, filtrando por `strictChecks: ["passing"]`, desaloja de inmediato la réplica del balanceo Ingress.
+  5. El contenedor drena y finaliza las extracciones/solicitudes en curso dentro de la ventana de `stop_grace_period` (35s en extractor, 30s en documents/api).
+  6. Finaliza limpiamente con **`ExitCode = 0`**.
 - **Muerte Súbita (`SIGKILL`):** Si una instancia se destruye súbitamente (`ExitCode = 137`), Consul y Traefik descartan la réplica y el tráfico continúa sin interrupciones a través de las réplicas sobrevivientes.
 
 ---
@@ -195,6 +203,8 @@ k6 run load-tests/k6-spike.js
 ---
 
 ## Consideraciones de Seguridad y Limitaciones
-- **Servidor Único de Consul:** La configuración utiliza un único servidor (`-server -bootstrap-expect=1`). Es la arquitectura adecuada para entornos locales de desarrollo e integración, pero **no** representa un clúster de alta disponibilidad (HA) para producción (donde se requerirían 3 o 5 servidores Consul con quórum Raft).
-- **Socket de Docker:** `registrator` y `traefik` montan `/var/run/docker.sock:ro`. En producción, se recomienda intermediar mediante un `docker-socket-proxy` que restrinja las llamadas únicamente a `GET /events` y `GET /containers/*`.
-- **Restricción de Puertos:** Los puertos administrativos (`8080` de Traefik y `8500` de Consul) están estrictamente vinculados a `127.0.0.1`, impidiendo accesos no autorizados desde interfaces externas.
+- **Servidor Único de Consul:** La configuración de desarrollo utiliza un único nodo (`-server -bootstrap-expect=1`). En producción, se debe desplegar un clúster de alta disponibilidad (HA) con 3 o 5 servidores Consul coordinados mediante quórum Raft.
+- **Seguridad del Docker Socket:** `registrator` y `traefik` montan `/var/run/docker.sock:ro`. El flag `:ro` impide escribir sobre el archivo de socket, pero **no** restringe llamadas a la API de Docker. En producción, debe utilizarse un **Docker Socket Proxy** (`tecnativa/docker-socket-proxy`) bloqueando peticiones POST, DELETE y EXEC (`CONTAINERS=1`, `EVENTS=1`, `NETWORKS=1`).
+- **Control de Acceso (Consul ACLs):** En producción, debe activarse el sistema de ACLs de Consul (`default_policy: "deny"`), aprovisionando tokens dedicados con mínimo privilegio: un token de escritura para `registrator` (`service:write`) y un token de solo lectura para `traefik` (`service:read`).
+- **Restricción de Puertos Administrativos:** Los puertos `8080` (Traefik Dashboard) y `8500` (Consul API/UI) se encuentran estrictamente vinculados a `127.0.0.1`, impidiendo su exposición en redes públicas o interfaces externas.
+- **Límites Operativos del Orquestador (`api`):** El servicio `api` está acotado en `536870912` bytes (512 MiB de RAM), `MAX_UPLOAD_BYTES: 20971520` (20 MiB) y `MAX_CONCURRENT_REQUESTS: 2` para evitar desbordes de memoria y activación de OOMKiller ante múltiples cargas simultáneas.

@@ -39,7 +39,7 @@ RECONCILE_INTERVAL = int(os.getenv("RECONCILE_INTERVAL", "10"))
 SERVICE_DEFINITIONS = {
     "extractor": {
         "port": 8000,
-        "health_path": "/health",
+        "health_path": "/health/ready",
         "tags": [
             "traefik.enable=true",
             "traefik.http.routers.extractor.rule=Host(`extractor.universidad.localhost`)",
@@ -54,7 +54,7 @@ SERVICE_DEFINITIONS = {
     },
     "documents": {
         "port": 8000,
-        "health_path": "/health",
+        "health_path": "/health/ready",
         "tags": [
             "traefik.enable=true",
             "traefik.http.routers.documents.rule=Host(`documents.universidad.localhost`)",
@@ -69,7 +69,7 @@ SERVICE_DEFINITIONS = {
     },
     "api": {
         "port": 8000,
-        "health_path": "/health",
+        "health_path": "/ready",
         "tags": [
             "traefik.enable=true",
             "traefik.http.routers.api.rule=Host(`api.universidad.localhost`)",

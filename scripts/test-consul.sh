@@ -44,10 +44,32 @@ echo -e "${CYAN}================================================================
 echo -e "${CYAN}   UTN FRSR - SUITE DE VALIDACIÓN AUTOMATIZADA: HASHICORP CONSUL      ${NC}"
 echo -e "${CYAN}======================================================================${NC}"
 
-# Asegurar fixture PDF
+# Asegurar fixture PDF con offsets xref exactos (183 bytes)
 if [ ! -f "$TEST_PDF" ]; then
     mkdir -p "$(dirname "$TEST_PDF")"
-    printf "%%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%%%EOF" > "$TEST_PDF"
+    cat << 'EOF' > "$TEST_PDF"
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+endobj
+xref
+0 4
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+trailer
+<< /Size 4 /Root 1 0 R >>
+startxref
+183
+%%EOF
+EOF
 fi
 
 # ------------------------------------------------------------------------------
@@ -85,31 +107,58 @@ for ip in $IPS; do
 done
 
 # ------------------------------------------------------------------------------
-# TEST 2: Escalado Dinámico a 3 Réplicas y Descubrimiento en Traefik
+# TEST 2: Escalado Dinámico a 5 Réplicas y Descubrimiento en Traefik
 # ------------------------------------------------------------------------------
-echo -e "\n${YELLOW}[TEST 2] Evaluando escalado horizontal del Extractor a 3 réplicas...${NC}"
-docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor > /dev/null
+echo -e "\n${YELLOW}[TEST 2] Evaluando escalado horizontal del Extractor a 5 réplicas...${NC}"
+docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=5 extractor > /dev/null
 
-echo -e "Esperando 5s para sincronización de Registrator y Consul..."
-sleep 5
+echo -e "Esperando 6s para sincronización de Registrator, Consul y Traefik..."
+sleep 6
 
-EXTRACTOR_INSTANCES=$(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true")
-INSTANCE_COUNT=$(echo "$EXTRACTOR_INSTANCES" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | wc -l)
-echo -e "Instancias saludables de 'extractor' en Consul: ${GREEN}${INSTANCE_COUNT}${NC}"
+EXTRACTOR_PASSING=$(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true")
+PASSING_COUNT=$(echo "$EXTRACTOR_PASSING" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | wc -l)
+echo -e "Instancias saludables de 'extractor' en Consul: ${GREEN}${PASSING_COUNT} / 5${NC}"
 
-if [ "$INSTANCE_COUNT" -lt 3 ]; then
-    echo -e "${RED}✘ FALLO: Se esperaban al menos 3 instancias en Consul, encontradas: ${INSTANCE_COUNT}.${NC}"
+if [ "$PASSING_COUNT" -ne 5 ]; then
+    echo -e "${RED}✘ FALLO: Se esperaban exactamente 5 instancias saludables en Consul, encontradas: ${PASSING_COUNT}.${NC}"
     exit 1
 fi
-echo -e "${GREEN}✔ Escalado verificado en Consul con IDs únicos e independientes.${NC}"
 
-# Verificar que Traefik v3 detectó las instancias en su pool de servidores
-TRAEFIK_SERVICES=$(curl -s "${TRAEFIK_API}/api/http/services")
-if echo "$TRAEFIK_SERVICES" | grep -q "extractor@consulcatalog"; then
-    echo -e "${GREEN}✔ Traefik v3 integró el backend dinámico 'extractor@consulcatalog'.${NC}"
-else
-    echo -e "${RED}✘ Traefik no detectó el servicio desde Consul Catalog.${NC}"
+# Validar 5 IDs únicos de instancia
+UNIQUE_IDS=($(echo "$EXTRACTOR_PASSING" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | cut -d'"' -f4 | sort -u))
+if [ "${#UNIQUE_IDS[@]}" -ne 5 ]; then
+    echo -e "${RED}✘ FALLO: Los IDs de las instancias no son únicos (${#UNIQUE_IDS[@]} únicos de 5).${NC}"
     exit 1
+fi
+echo -e "${GREEN}✔ 5 IDs únicos verificados:${NC} ${UNIQUE_IDS[*]}"
+
+# Validar 5 IPs individuales distintas en pdf-network
+UNIQUE_IPS=($(echo "$EXTRACTOR_PASSING" | grep -oE '"ServiceAddress":"[0-9.]+"' | cut -d'"' -f4 | sort -u))
+if [ "${#UNIQUE_IPS[@]}" -ne 5 ]; then
+    echo -e "${RED}✘ FALLO: Las IPs registradas no son individuales o presentan duplicados (${#UNIQUE_IPS[@]} únicas de 5).${NC}"
+    exit 1
+fi
+echo -e "${GREEN}✔ 5 IPs individuales verificadas:${NC} ${UNIQUE_IPS[*]}"
+
+# Verificar que Traefik v3 detectó las 5 instancias en su pool de servidores
+TRAEFIK_SERVICE_JSON=$(curl -s "${TRAEFIK_API}/api/http/services/extractor@consulcatalog" || echo "")
+if [ -n "$TRAEFIK_SERVICE_JSON" ] && echo "$TRAEFIK_SERVICE_JSON" | grep -q "extractor@consulcatalog"; then
+    TRAEFIK_SERVERS_COUNT=$(echo "$TRAEFIK_SERVICE_JSON" | grep -o '"url":' | wc -l)
+    echo -e "Servidores balanceados en Traefik (extractor@consulcatalog): ${GREEN}${TRAEFIK_SERVERS_COUNT} / 5${NC}"
+    if [ "$TRAEFIK_SERVERS_COUNT" -eq 5 ]; then
+        echo -e "${GREEN}✔ Traefik v3 balancea exactamente sobre las 5 instancias saludables.${NC}"
+    else
+        echo -e "${YELLOW}ℹ Traefik reporta ${TRAEFIK_SERVERS_COUNT} servidores activos en el catálogo.${NC}"
+    fi
+else
+    # Fallback si Traefik agrupa la lista completa en /api/http/services
+    TRAEFIK_SERVICES=$(curl -s "${TRAEFIK_API}/api/http/services")
+    if echo "$TRAEFIK_SERVICES" | grep -q "extractor@consulcatalog"; then
+        echo -e "${GREEN}✔ Traefik v3 integró el backend dinámico 'extractor@consulcatalog'.${NC}"
+    else
+        echo -e "${RED}✘ Traefik no detectó el servicio desde Consul Catalog.${NC}"
+        exit 1
+    fi
 fi
 
 # ------------------------------------------------------------------------------
@@ -127,11 +176,13 @@ docker stop "$VICTIM_CID" > /dev/null
 echo -e "Esperando 4s para propagación de desregistro en Consul..."
 sleep 4
 
+POST_STOP_PASSING=$(curl -s "${CONSUL_API}/v1/health/service/extractor?passing=true" | grep -oE '"ServiceID":"extractor-[a-f0-9]+"' | wc -l)
+echo -e "Instancias saludables restantes en Consul: ${GREEN}${POST_STOP_PASSING} / 4${NC}"
+
 POST_STOP_INSTANCES=$(curl -s "${CONSUL_API}/v1/agent/services")
 if echo "$POST_STOP_INSTANCES" | grep -q "extractor-${VICTIM_SHORT}"; then
-    # Verificar si el check está crítico
     HEALTH_STATE=$(curl -s "${CONSUL_API}/v1/health/checks/extractor" | grep -oE '"Status":"(passing|critical)"' | head -n 1 || echo "")
-    echo -e "Estado de salud en Consul: ${YELLOW}${HEALTH_STATE}${NC}"
+    echo -e "Estado de salud en Consul para réplica detenida: ${YELLOW}${HEALTH_STATE}${NC}"
 else
     echo -e "${GREEN}✔ Réplica ${VICTIM_SHORT} dada de baja exitosamente del catálogo de Consul.${NC}"
 fi

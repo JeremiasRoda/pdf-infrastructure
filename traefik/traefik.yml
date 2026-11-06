@@ -57,3 +57,6 @@ providers:
     prefix: "traefik"
     refreshInterval: "2s"
     exposedByDefault: false
+    # Enrutar exclusivamente a instancias con health checks en estado 'passing' (ignora 'warning' y 'critical')
+    strictChecks:
+      - "passing"

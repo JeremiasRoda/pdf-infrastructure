@@ -41,8 +41,7 @@ function Generar-PdfMinimo {
         [string]$RutaArchivo,
         [string]$Texto
     )
-    $len = $Texto.Length + 40
-    $plantilla = @'
+    $contenido = @'
 %PDF-1.4
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
@@ -51,32 +50,20 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>
-endobj
-4 0 obj
-<< /Length __LEN__ >>
-stream
-BT
-/F1 12 Tf
-72 712 Td
-(__TEXTO__) Tj
-ET
-endstream
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
 endobj
 xref
-0 5
+0 4
 0000000000 65535 f 
 0000000009 00000 n 
 0000000058 00000 n 
 0000000115 00000 n 
-0000000214 00000 n 
 trailer
-<< /Size 5 /Root 1 0 R >>
+<< /Size 4 /Root 1 0 R >>
 startxref
-310
+183
 %%EOF
 '@
-    $contenido = $plantilla.Replace('__LEN__', $len.ToString()).Replace('__TEXTO__', $Texto)
     [System.IO.File]::WriteAllText($RutaArchivo, $contenido, [System.Text.Encoding]::ASCII)
 }
 

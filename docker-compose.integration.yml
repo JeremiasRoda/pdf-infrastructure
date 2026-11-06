@@ -210,7 +210,8 @@ services:
       - EXTRACTOR_URL=http://extractor:8000
       - DOCUMENT_SERVICE_URL=http://documents:8000
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-25000000}
+      - MAX_UPLOAD_BYTES=20971520
+      - MAX_CONCURRENT_REQUESTS=2
       - EXTRACTOR_TIMEOUT_SECONDS=${EXTRACTOR_TIMEOUT_SECONDS:-30}
       - DOCUMENT_TIMEOUT_SECONDS=${DOCUMENT_TIMEOUT_SECONDS:-5}
       - READY_CHECK_TIMEOUT_SECONDS=${READY_CHECK_TIMEOUT_SECONDS:-2}
@@ -223,7 +224,7 @@ services:
       resources:
         limits:
           cpus: '1.0'
-          memory: 1G
+          memory: "536870912"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).close()"]
       interval: 5s

@@ -19,7 +19,7 @@ $initialExtractors = (docker ps --filter "name=extractor" --format "{{.ID}}") -s
 $initialCount = $initialExtractors.Count
 if ($initialCount -lt 2) { $initialCount = 2 }
 
-# Asegurar fixture PDF
+# Asegurar fixture PDF con offsets exactos (183 bytes)
 if (-not (Test-Path $TestPdf)) {
     $parent = Split-Path -Parent $TestPdf
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
@@ -43,7 +43,7 @@ xref
 trailer
 << /Size 4 /Root 1 0 R >>
 startxref
-190
+183
 %%EOF
 "@
     [System.IO.File]::WriteAllText($TestPdf, $pdfMinimal)
@@ -97,35 +97,62 @@ try {
     }
 
     # --------------------------------------------------------------------------
-    # TEST 2: Escalado Dinámico a 3 Réplicas y Descubrimiento en Traefik
+    # TEST 2: Escalado Dinámico a 5 Réplicas y Descubrimiento en Traefik
     # --------------------------------------------------------------------------
-    Write-Host "`n[TEST 2] Evaluando escalado horizontal del Extractor a 3 réplicas..." -ForegroundColor Yellow
-    docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=3 extractor | Out-Null
+    Write-Host "`n[TEST 2] Evaluando escalado horizontal del Extractor a 5 réplicas..." -ForegroundColor Yellow
+    docker compose -f docker-compose.integration.yml up -d --no-deps --scale extractor=5 extractor | Out-Null
 
-    Write-Host "Esperando 5s para sincronización de Registrator y Consul..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 5
+    Write-Host "Esperando 6s para sincronización de Registrator, Consul y Traefik..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 6
 
     $healthResp = (Invoke-WebRequest -Uri "$ConsulApi/v1/health/service/extractor?passing=true" -UseBasicParsing).Content | ConvertFrom-Json
     $instanceCount = $healthResp.Count
-    Write-Host "Instancias saludables de 'extractor' en Consul: $instanceCount" -ForegroundColor Green
+    Write-Host "Instancias saludables de 'extractor' en Consul: $instanceCount / 5" -ForegroundColor Green
 
-    if ($instanceCount -lt 3) {
-        Write-Host "✘ FALLO: Se esperaban al menos 3 instancias en Consul, encontradas: $instanceCount." -ForegroundColor Red
+    if ($instanceCount -ne 5) {
+        Write-Host "✘ FALLO: Se esperaban exactamente 5 instancias saludables en Consul, encontradas: $instanceCount." -ForegroundColor Red
         exit 1
     }
-    Write-Host "✔ Escalado verificado en Consul con IDs únicos e independientes." -ForegroundColor Green
 
-    # Verificar en Traefik
-    $traefikServices = (Invoke-WebRequest -Uri "$TraefikApi/api/http/services" -UseBasicParsing).Content
-    if ($traefikServices -match "extractor@consulcatalog") {
-        Write-Host "✔ Traefik v3 integró el backend dinámico 'extractor@consulcatalog'." -ForegroundColor Green
-    } else {
-        Write-Host "✘ Traefik no detectó el servicio desde Consul Catalog." -ForegroundColor Red
+    # Validar 5 IDs únicos de instancia
+    $serviceIds = $healthResp | ForEach-Object { $_.Service.ID } | Select-Object -Unique
+    if ($serviceIds.Count -ne 5) {
+        Write-Host "✘ FALLO: Los IDs de las instancias no son únicos ($($serviceIds.Count) únicos de 5)." -ForegroundColor Red
         exit 1
+    }
+    Write-Host "✔ 5 IDs únicos verificados: $($serviceIds -join ', ')" -ForegroundColor Green
+
+    # Validar 5 IPs individuales distintas en pdf-network
+    $serviceIps = $healthResp | ForEach-Object { $_.Service.Address } | Select-Object -Unique
+    if ($serviceIps.Count -ne 5) {
+        Write-Host "✘ FALLO: Las IPs registradas no son individuales o presentan duplicados ($($serviceIps.Count) únicas de 5)." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "✔ 5 IPs individuales verificadas: $($serviceIps -join ', ')" -ForegroundColor Green
+
+    # Verificar que Traefik v3 detectó las instancias en su pool de servidores
+    try {
+        $traefikSvcRaw = (Invoke-WebRequest -Uri "$TraefikApi/api/http/services/extractor@consulcatalog" -UseBasicParsing -TimeoutSec 3).Content
+        $traefikSvcObj = $traefikSvcRaw | ConvertFrom-Json
+        $serverCount = $traefikSvcObj.loadBalancer.servers.Count
+        Write-Host "Servidores balanceados en Traefik (extractor@consulcatalog): $serverCount / 5" -ForegroundColor Green
+        if ($serverCount -eq 5) {
+            Write-Host "✔ Traefik v3 balancea exactamente sobre las 5 instancias saludables." -ForegroundColor Green
+        } else {
+            Write-Host "ℹ Traefik reporta $serverCount servidores activos en el catálogo." -ForegroundColor Yellow
+        }
+    } catch {
+        $traefikServices = (Invoke-WebRequest -Uri "$TraefikApi/api/http/services" -UseBasicParsing).Content
+        if ($traefikServices -match "extractor@consulcatalog") {
+            Write-Host "✔ Traefik v3 integró el backend dinámico 'extractor@consulcatalog'." -ForegroundColor Green
+        } else {
+            Write-Host "✘ Traefik no detectó el servicio desde Consul Catalog." -ForegroundColor Red
+            exit 1
+        }
     }
 
     # --------------------------------------------------------------------------
-    # TEST 3: Baja Controlada (Detención de Réplica)
+    # TEST 3: Baja Controlada (Detención de Réplica y Retiro del Catálogo)
     # --------------------------------------------------------------------------
     Write-Host "`n[TEST 3] Evaluando baja controlada y retiro de catálogo al detener réplica..." -ForegroundColor Yellow
     $allExtractors = (docker ps --filter "name=extractor" --format "{{.ID}}") -split "`n" | Where-Object { $_.Trim().Length -gt 0 }
@@ -138,6 +165,9 @@ try {
 
     Write-Host "Esperando 4s para propagación de desregistro en Consul..." -ForegroundColor Yellow
     Start-Sleep -Seconds 4
+
+    $postStopPassing = (Invoke-WebRequest -Uri "$ConsulApi/v1/health/service/extractor?passing=true" -UseBasicParsing).Content | ConvertFrom-Json
+    Write-Host "Instancias saludables restantes en Consul: $($postStopPassing.Count) / 4" -ForegroundColor Green
 
     $postStopServices = (Invoke-WebRequest -Uri "$ConsulApi/v1/agent/services" -UseBasicParsing).Content
     if ($postStopServices -match "extractor-$victimShort") {

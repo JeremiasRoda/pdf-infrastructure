@@ -39,30 +39,20 @@ endobj
 << /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >>
-endobj
-4 0 obj
-<< /Length $((${#texto} + 40)) >>
-stream
-BT
-/F1 12 Tf
-72 712 Td
-($texto) Tj
-ET
-endstream
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
 endobj
 xref
-0 5
+0 4
 0000000000 65535 f 
 0000000009 00000 n 
 0000000058 00000 n 
 0000000115 00000 n 
-0000000214 00000 n 
 trailer
-<< /Size 5 /Root 1 0 R >>
+<< /Size 4 /Root 1 0 R >>
 startxref
-310
+183
 %%EOF
+EOF
 }
 
 if [ -d "${SOURCE_DIR}" ] && compgen -G "${SOURCE_DIR}/*.pdf" > /dev/null; then
