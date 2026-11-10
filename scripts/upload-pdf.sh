@@ -34,6 +34,7 @@ trailer << /Size 6 /Root 1 0 R >>
 startxref
 427
 %%EOF
+EOF
 fi
 
 echo "[PASO 1/2] Enviando PDF a traves de Traefik hacia la API..."
