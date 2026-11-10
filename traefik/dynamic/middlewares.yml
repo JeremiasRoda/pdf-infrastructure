@@ -39,6 +39,13 @@ http:
         fallbackDuration: 10s
         recoveryDuration: 5s
 
+    circuit-breaker-documents:
+      circuitBreaker:
+        expression: "NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25"
+        checkPeriod: 5s
+        fallbackDuration: 10s
+        recoveryDuration: 5s
+
     circuit-breaker-api:
       circuitBreaker:
         expression: "NetworkErrorRatio() > 0.30 || ResponseCodeRatio(500, 600, 0, 600) > 0.25"

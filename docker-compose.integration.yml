@@ -21,7 +21,11 @@ services:
       - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
       - ./traefik/dynamic:/etc/traefik/dynamic:ro
     networks:
-      - pdf-network
+      pdf-network:
+        aliases:
+          - extractor.universidad.localhost
+          - documents.universidad.localhost
+          - api.universidad.localhost
     depends_on:
       consul:
         condition: service_healthy
@@ -37,7 +41,7 @@ services:
   # Servidor único con almacenamiento persistente para entorno local e integración
   # ----------------------------------------------------------------------------
   consul:
-    image: hashicorp/consul:1.20.2
+    image: hashicorp/consul:2.0.4
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -207,8 +211,8 @@ services:
       - pdf-network
     environment:
       - PORT=8000
-      - EXTRACTOR_URL=http://extractor:8000
-      - DOCUMENT_SERVICE_URL=http://documents:8000
+      - EXTRACTOR_URL=http://extractor.universidad.localhost
+      - DOCUMENT_SERVICE_URL=http://documents.universidad.localhost
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - MAX_UPLOAD_BYTES=20971520
       - MAX_CONCURRENT_REQUESTS=2
@@ -241,7 +245,7 @@ services:
   # Solo se levanta explícitamente con '--profile cache'
   # ----------------------------------------------------------------------------
   dragonfly:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.26.0
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -258,6 +262,55 @@ services:
       timeout: 3s
       retries: 3
       start_period: 2s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # Stack de Observabilidad Centralizado (Prometheus & Grafana) - Factor XI
+  # Perfil condicional 'monitoring': docker compose --profile monitoring up -d
+  # ----------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    restart: unless-stopped
+    init: true
+    profiles:
+      - monitoring
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - pdf-network
+    security_opt:
+      - "no-new-privileges:true"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  grafana:
+    image: grafana/grafana-oss:11.4.0
+    restart: unless-stopped
+    init: true
+    profiles:
+      - monitoring
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks:
+      - pdf-network
+    security_opt:
+      - "no-new-privileges:true"
     deploy:
       resources:
         limits:

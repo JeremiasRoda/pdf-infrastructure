@@ -42,7 +42,7 @@ services:
   # Interfaz web y API REST en puerto 8500 (restringido a 127.0.0.1)
   # ----------------------------------------------------------------------------
   consul:
-    image: hashicorp/consul:1.20.2
+    image: hashicorp/consul:2.0.4
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
@@ -81,7 +81,7 @@ services:
   # Para levantarlo: docker compose --profile cache up -d dragonfly
   # ----------------------------------------------------------------------------
   dragonfly:
-    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.26.0
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v2.0.2
     restart: unless-stopped
     init: true
     stop_grace_period: 30s

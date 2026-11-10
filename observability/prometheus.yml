@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Metricas del Ingress Gateway (Traefik v3)
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['traefik:8080']
+
+  # Metricas del Microservicio Extractor
+  - job_name: 'pdf-extractor'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['extractor:8000']
+
+  # Metricas del Microservicio API
+  - job_name: 'pdf-api'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:8000']
+
+  # Metricas del Microservicio Documents
+  - job_name: 'pdf-documents'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['documents:8000']
