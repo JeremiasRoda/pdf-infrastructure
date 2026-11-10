@@ -99,10 +99,13 @@ $docId = $response.document_id
 Write-Host "`n[PASO 2/3] Verificando en persistencia (MongoDB) via microservicio Documents..." -ForegroundColor Yellow
 Write-Host "  GET $TraefikUrl/documents/$docId [Host: $DocsHost]" -ForegroundColor Gray
 
+$DocToken = $env:DOCUMENTS_API_TOKEN
+if (-not $DocToken) { $DocToken = "secret_token_integration_documents_32chars" }
+
 try {
     $docResponse = Invoke-RestMethod -Uri "$TraefikUrl/documents/$docId" `
         -Method Get `
-        -Headers @{ "Host" = $DocsHost } `
+        -Headers @{ "Host" = $DocsHost; "Authorization" = "Bearer $DocToken" } `
         -TimeoutSec 10
 
     Write-Host "  -> Documento encontrado en Base de Datos!" -ForegroundColor Green

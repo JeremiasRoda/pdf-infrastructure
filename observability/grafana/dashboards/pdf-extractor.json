@@ -1,0 +1,18 @@
+{
+  "uid": "pdf-extractor",
+  "title": "PDF Extractor",
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Requests/s", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8}, "targets": [{"expr": "sum(rate(pdf_http_requests_total{route=\"/extract\"}[1m]))", "legendFormat": "requests/s"}]},
+    {"id": 2, "title": "HTTP p50 / p90 / p95 (s)", "type": "timeseries", "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8}, "targets": [{"expr": "histogram_quantile(0.50,sum by (le)(rate(pdf_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p50"}, {"expr": "histogram_quantile(0.90,sum by (le)(rate(pdf_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p90"}, {"expr": "histogram_quantile(0.95,sum by (le)(rate(pdf_http_request_duration_seconds_bucket[5m])))", "legendFormat": "p95"}]},
+    {"id": 3, "title": "HTTP errors / 429 / 503", "type": "timeseries", "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8}, "targets": [{"expr": "sum(rate(pdf_http_requests_total{status=~\"4..|5..\"}[5m]))", "legendFormat": "errors/s"}, {"expr": "sum(rate(pdf_http_requests_total{status=\"429\"}[5m]))", "legendFormat": "429/s"}, {"expr": "sum(rate(pdf_http_requests_total{status=\"503\"}[5m]))", "legendFormat": "503/s"}]},
+    {"id": 4, "title": "PDF extraction p95 (s)", "type": "timeseries", "gridPos": {"x": 0, "y": 8, "w": 8, "h": 8}, "targets": [{"expr": "histogram_quantile(0.95,sum by (le)(rate(pdf_extraction_duration_seconds_bucket[5m])))", "legendFormat": "extract p95"}]},
+    {"id": 5, "title": "Body receive p95 (s)", "type": "timeseries", "gridPos": {"x": 8, "y": 8, "w": 8, "h": 8}, "targets": [{"expr": "histogram_quantile(0.95,sum by (le)(rate(pdf_request_body_receive_seconds_bucket[5m])))", "legendFormat": "receive p95"}]},
+    {"id": 6, "title": "Cache hit ratio", "type": "timeseries", "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8}, "targets": [{"expr": "sum(rate(pdf_cache_requests_total{result=\"hit\"}[5m])) / clamp_min(sum(rate(pdf_cache_requests_total[5m])), 0.001)", "legendFormat": "HIT ratio"}]},
+    {"id": 7, "title": "In flight / extraction / admission queue", "type": "timeseries", "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8}, "targets": [{"expr": "sum(pdf_inflight_requests)", "legendFormat": "HTTP"}, {"expr": "sum(pdf_extraction_inflight)", "legendFormat": "extraction"}, {"expr": "sum(pdf_admission_queue_size)", "legendFormat": "queue"}]},
+    {"id": 8, "title": "Singleflight shared / actual conversions", "type": "timeseries", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8}, "targets": [{"expr": "sum(increase(pdf_singleflight_shared_total[5m]))", "legendFormat": "shared"}, {"expr": "sum(increase(pdf_extractions_total[5m]))", "legendFormat": "conversions"}]}
+  ]
+}

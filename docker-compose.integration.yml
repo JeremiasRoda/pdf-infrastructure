@@ -178,6 +178,7 @@ services:
       - MONGODB_URI=mongodb://mongodb:27017
       - MONGODB_DATABASE=${MONGODB_DATABASE:-pdf_extractext_integration}
       - MONGODB_TIMEOUT_MS=1500
+      - DOCUMENTS_API_TOKEN=${DOCUMENTS_API_TOKEN:-secret_token_integration_documents_32chars}
     depends_on:
       mongodb:
         condition: service_healthy
@@ -213,6 +214,7 @@ services:
       - PORT=8000
       - EXTRACTOR_URL=http://extractor.universidad.localhost
       - DOCUMENT_SERVICE_URL=http://documents.universidad.localhost
+      - DOCUMENTS_API_TOKEN=${DOCUMENTS_API_TOKEN:-secret_token_integration_documents_32chars}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - MAX_UPLOAD_BYTES=20971520
       - MAX_CONCURRENT_REQUESTS=2
@@ -297,6 +299,9 @@ services:
 
   grafana:
     image: grafana/grafana-oss:11.4.0
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     restart: unless-stopped
     init: true
     profiles:

@@ -48,7 +48,10 @@ DOC_ID=$(echo "$RESPONSE" | grep -o '"document_id":"[^"]*' | cut -d'"' -f4)
 
 if [ -n "$DOC_ID" ]; then
     echo -e "\n[PASO 2/2] Verificando en Documents Service (MongoDB)..."
-    DOC_RESPONSE=$(curl -s -X GET "$TRAEFIK_URL/documents/$DOC_ID" -H "Host: $DOCS_HOST")
+    DOC_TOKEN="${DOCUMENTS_API_TOKEN:-secret_token_integration_documents_32chars}"
+    DOC_RESPONSE=$(curl -s -X GET "$TRAEFIK_URL/documents/$DOC_ID" \
+        -H "Host: $DOCS_HOST" \
+        -H "Authorization: Bearer $DOC_TOKEN")
     echo "Respuesta de Documents:"
     echo "$DOC_RESPONSE"
     echo -e "\n[EXITO] Documento persistido y verificado correctamente."
